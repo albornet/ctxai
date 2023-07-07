@@ -1,6 +1,5 @@
 import os
 import csv
-import math
 import pandas as pd
 import matplotlib.pyplot as plt
 import torchdata.datapipes.iter as dpi
@@ -20,8 +19,8 @@ CSV_HEADERS = [
     'conditions', 'category', 'context', 'subcontext', 'individual criterion',
 ]
 ENCODING = 'utf-8'
-NUM_STEPS = 110000  # math.inf
-NUM_WORKERS = 12
+NUM_STEPS = 110000
+NUM_WORKERS = 6
 NUM_WORKERS = min(NUM_WORKERS, max(os.cpu_count() - 4, os.cpu_count() // 4))
 LOAD_CSV_RESULTS = False
 DEBUG = False

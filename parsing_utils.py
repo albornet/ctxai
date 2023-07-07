@@ -1,5 +1,7 @@
 import os
 import re
+import nltk
+nltk.download('punkt')
 from difflib import SequenceMatcher
 from nltk.tokenize import sent_tokenize
 from torchdata.datapipes import functional_datapipe
