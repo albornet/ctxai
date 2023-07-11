@@ -15,8 +15,8 @@ LOAD_PATH = os.path.join('data', 'postprocessed')
 OUTPUT_PATH = os.path.join('.', 'cluster_plot.png')
 LOAD_DATA = False
 FILTER_BEFORE = True
+assert FILTER_BEFORE == True  # (for now, only this works)
 CHOSEN_PHASES = ['Phase 2', 'Phase 3']  # None to ignore this selection filter
-CHOSEN_CONDS = None  # ['Prostate Cancer']  # None to ignore this selection filter
 CHOSEN_COND_IDS = ['C04']  # None to ignore this selection filter
 CHOSEN_ITRV_IDS = ['D02']  # None to ignore this selection filter
 ENCODING = 'utf-8'
@@ -24,7 +24,7 @@ DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 NUM_WORKERS = 0  # 0 for no multiprocessing
 NUM_WORKERS = min(NUM_WORKERS, os.cpu_count() // 2)
 BATCH_SIZE = 64
-NUM_STEPS = 100  # 2178930 // BATCH_SIZE + 1  # torch.inf
+NUM_STEPS = 10  # 2178930 // BATCH_SIZE + 1  # torch.inf
 MODEL_STR_MAP = {
     'pubmed-bert-token': 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext',
     'bioct-bert-token': 'domenicrosati/ClinicalTrialBioBert-NLI4CT',
@@ -68,11 +68,10 @@ def main():
         
     # Generate final plot
     if FILTER_BEFORE:
-        _ = plot_clusters(
-            embeddings, raw_txts, labels, CHOSEN_PHASES, CHOSEN_CONDS,
-            CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
-    else:
         _ = plot_clusters(embeddings, raw_txts, labels)
+    else:
+        _ = plot_clusters(embeddings, raw_txts, labels,
+                          CHOSEN_PHASES, CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
     plt.tight_layout()
     plt.savefig(OUTPUT_PATH, dpi=300)
     
@@ -105,13 +104,12 @@ def get_dataset(data_dir, tokenizer):
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
-    files = dpi.FileLister(data_dir, recursive=True, masks='*.csv')
+    files = dpi.FileLister(data_dir, recursive=True, masks='*criteria.csv')
     sharded = dpi.ShardingFilter(files)  # split file processing by shards
     jsons = dpi.FileOpener(sharded, encoding=ENCODING)
     rows = dpi.CSVParser(jsons)
-    data_labels = ClinicalTrialFilter(
-        rows, FILTER_BEFORE, CHOSEN_PHASES, CHOSEN_CONDS,
-        CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
+    data_labels = ClinicalTrialFilter(rows, FILTER_BEFORE, CHOSEN_PHASES,
+                                      CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
     batches = dpi.Batcher(data_labels, batch_size=BATCH_SIZE)
     tokenized_batches = Tokenizer(batches, tokenizer)
     return tokenized_batches
@@ -143,7 +141,6 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
                  dp: dpi.IterDataPipe,
                  filter_before: bool,
                  selected_phases: list[str],
-                 selected_conds: list[str],
                  selected_cond_ids: list[str],
                  selected_itrv_ids: list[str],
                  ) -> None:
@@ -152,48 +149,41 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         """
         self.dp = dp
         all_column_names = next(iter(self.dp))
-        cols = ['individual criterion', 'phases', 'conditions', 'condition_ids',
+        cols = ['individual criterion', 'phases', 'ct path', 'condition_ids',
                 'intervention_ids', 'category', 'context', 'subcontext', 'label']
         assert all([c in all_column_names for c in cols])
         self.col_id = {c: all_column_names.index(c) for c in cols}
         self.filter_before = filter_before
         self.selected_phases = selected_phases
-        self.selected_conds = selected_conds
         self.selected_cond_ids = selected_cond_ids
         self.selected_itrv_ids = selected_itrv_ids
         
     def __iter__(self):
         for i, sample in enumerate(self.dp):
-            # Filter out unwanted lines of csv file
+            # Filter out unwanted lines of the csv file
             if i == 0: continue
             if self.filter_before and not self._filter_fn(sample): continue
-            ct_phases = ast.literal_eval(sample[self.col_id['phases']])
-            ct_conditions = ast.literal_eval(sample[self.col_id['conditions']])
-            ct_status = sample[self.col_id['label']].lower()
             
-            # Yield sample, trying to maximize the number of 'terminated' samples
+            # Yield sample and useful labels
             labels = {
-                'phases': ct_phases,
-                'conditions': ct_conditions,
-                'status': ct_status
+                'ct_path': sample[self.col_id['ct path']],
+                'status': sample[self.col_id['label']].lower()
             }
             yield self._build_input_text(sample), labels
             
     def _filter_fn(self, sample):
         """ Filter out CTs that do not belong to a given phase and condition
         """
+        # Load relevant data (condition and intervention ids)
         ct_phases = ast.literal_eval(sample[self.col_id['phases']])
-        ct_conds = ast.literal_eval(sample[self.col_id['conditions']])
         ct_cond_ids = ast.literal_eval(sample[self.col_id['condition_ids']])
         ct_itrv_ids = ast.literal_eval(sample[self.col_id['intervention_ids']])
-        ct_cond_ids = [c for cc in ct_cond_ids for c in cc]  # flatten -> TODO: REMOVE?
-        ct_itrv_ids = [i for ii in ct_itrv_ids for i in ii]  # flatten -> TODO: REMOVE?
+        ct_cond_ids = [c for cc in ct_cond_ids for c in cc]  # flatten
+        ct_itrv_ids = [i for ii in ct_itrv_ids for i in ii]  # flatten
         
+        # Check if the criterion should be yielded
         if self.selected_phases is not None\
         and all([p not in ct_phases for p in self.selected_phases]):
-            return False
-        if self.selected_conds is not None\
-        and all([c not in ct_conds for c in self.selected_conds]):
             return False
         if self.selected_cond_ids is not None\
         and all([not any([c.startswith(i) for i in self.selected_cond_ids]) for c in ct_cond_ids]):
@@ -201,6 +191,8 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         if self.selected_itrv_ids is not None\
         and all([not any([c.startswith(i) for i in self.selected_itrv_ids]) for c in ct_itrv_ids]):
             return False
+        
+        # Accept to yield if the criterion passes all tests
         return True
     
     def _build_input_text(self, sample):

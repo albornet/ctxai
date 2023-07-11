@@ -24,7 +24,7 @@ NUM_STEPS = 110000  # actually 109685 in total
 NUM_WORKERS = 12
 NUM_WORKERS = min(NUM_WORKERS, max(os.cpu_count() - 4, os.cpu_count() // 4))
 LOAD_CSV_RESULTS = False
-EXAMPLE = False
+EXAMPLE = True
 DEBUG = False
 if DEBUG:
     EXAMPLE = True

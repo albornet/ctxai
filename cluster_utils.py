@@ -10,13 +10,13 @@ from scipy.spatial.distance import cdist
 
 
 DIM_RED_ALGO = 'tsne'  # 'pca', 'tsne', 'otsne'
-RED_DIM = 2  # 2  # None  # None for no dimensionality reduction
+RED_DIM = None  # None for no dimensionality reduction when clustering
 N_CPUS = min(10, os.cpu_count() // 2)  # for t-sne
 FIG_SIZE = (15, 5)
 TEXT_SIZE = 16
-COLORS = np.array(
-    (list(plt.cm.tab20(np.arange(20)[0::2])) + \
-     list(plt.cm.tab20(np.arange(20)[1::2]))) * 10
+COLORS = np.array((
+    list(plt.cm.tab20(np.arange(20)[0::2])) + \
+    list(plt.cm.tab20(np.arange(20)[1::2]))) * 10
 )
 NA_COLOR = np.array([0.0, 0.0, 0.0, 0.1])
 NOT_NA_COLOR_ALPHA = 0.8
@@ -30,15 +30,11 @@ MAX_CLUSTER_SIZE = 0.25  # in proportion of the number of data points
 def plot_clusters(embeddings: torch.Tensor,
                   raw_txt: list[str],
                   labels: list[str],
-                  chosen_phases: list[str]=None,
-                  chosen_conds: list[str]=None,
-                  chosen_cond_ids: list[str]=None,
-                  chosen_itrv_ids: list[str]=None,
                   ) -> plt.Figure:
     """ Reduce the dimensionality of concept embeddings for different categories
         and log a scatter plot of the low-dimensional data to tensorboard
     """
-    # Dimensionality reduction of all criterias' embeddings
+    # Reduce dimensionality of all criteria's embeddings
     print('\nReducing dim of %s eligibility criteria embeddings' % len(labels))
     fig, axs = plt.subplots(1, 3, figsize=FIG_SIZE)
     cluster_data = compute_reduced_repr(embeddings, dim=RED_DIM, algorithm=DIM_RED_ALGO)
@@ -48,22 +44,19 @@ def plot_clusters(embeddings: torch.Tensor,
         # plot_data = compute_reduced_repr(embeddings, dim=2, algorithm=DIM_RED_ALGO)
         plot_data = compute_reduced_repr(cluster_data, dim=2, algorithm=DIM_RED_ALGO)
     
-    # Eligibility criteria selection (specific condition, specific phase)
-    phases = [l['phases'] for l in labels]
-    conditions = [l['conditions'] for l in labels]
-    statuses = [l['status'] for l in labels]
+    # Load plot data, raw data and labels
     token_info = {
         'plot_data': plot_data,
         'raw_txt': raw_txt,
-        'class_lbls': statuses,
+        'class_lbls': [l['status'] for l in labels],
+        'ct_paths': [l['ct_path'] for l in labels],
     }
     
     # Cluster selected criteria, based on reduced embeddings
-    cluster_info = get_cluster_info(cluster_data)
-    centroid_sentences = [raw_txt[i] for i in cluster_info['centroid_ids']]  
-    medoid_sentences = [raw_txt[i] for i in cluster_info['medoid_ids']]
     print('Clustering %s eligibility criteria\n' % len(token_info['plot_data']))
-    plot_hierarchy(token_info, cluster_info, axs)
+    cluster_info = get_cluster_info(cluster_data)
+    generate_cluster_statistics(token_info, cluster_info)
+    plot_cluster_hierarchy(token_info, cluster_info, axs)
     return fig
 
 
@@ -101,7 +94,16 @@ def get_cluster_info(cluster_data):
     }
 
 
-def plot_hierarchy(token_info, cluster_info, axs):
+def generate_cluster_statistics(token_info, cluster_info):
+    """ Lalalalalalala
+    """
+    centrois = [token_info['raw_txt'][i] for i in cluster_info['centroid_ids']]
+    medoids = [token_info['raw_txt'][i] for i in cluster_info['medoid_ids']]
+    
+    import ipdb; ipdb.set_trace()
+    
+
+def plot_cluster_hierarchy(token_info, cluster_info, axs):
     """ Plot theoretical clusters (using labels), empirical clusters (using
         hdbscan), and the empirical cluster tree
     """
