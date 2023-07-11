@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import nltk
 nltk.download('punkt')
 from difflib import SequenceMatcher
@@ -45,7 +46,7 @@ SUBCONTEXT_KEYS = [  # TODO (?) ASSOCIATE EVERY KEY TO A CONTEXT KEY (?)
 NON_CONTEXT_KEYS = ['notes?', 'amended']  # not used for now
 SIMILARITY_FN = lambda s, k: SequenceMatcher(None, s, k).ratio()
 MAX_SIMILARITY_FN = lambda s, keys: max([SIMILARITY_FN(s.lower(), k) for k in keys])
-
+MESH_CROSSWALK_PATH = os.path.join('data', 'mesh_crosswalk.json')
 
 @functional_datapipe('filter_clinical_trials')
 class ClinicalTrialFilter(IterDataPipe):
@@ -55,65 +56,100 @@ class ClinicalTrialFilter(IterDataPipe):
     def __init__(self, dp):
         super().__init__()
         self.dp = dp
-    
+        with open(MESH_CROSSWALK_PATH, 'r') as f:
+            self.mesh_cw = json.load(f)
+            
     def __iter__(self):
         for ct_path, ct_dict in self.dp:
             # Load protocol and make sure it corresponds to the file name
             protocol = ct_dict['FullStudy']['Study']['ProtocolSection']
+            derived = ct_dict['FullStudy']['Study']['DerivedSection']
             nct_id = protocol['IdentificationModule']['NCTId']
             assert nct_id == os.path.split(ct_path)[-1].strip('.json')
             
             # Check protocol belongs to the data and load criteria
-            good_to_go, label, phases, conditions = self.check_protocol(protocol)
+            good_to_go, label, phases, conditions, cond_ids, itrv_ids =\
+                self.check_protocol(protocol, derived)
             if good_to_go:
                 metadata = {
                     'ct_path': ct_path,
                     'label': label,
                     'phases': phases,
                     'conditions': conditions,
+                    'condition_ids': cond_ids,
+                    'intervention_ids': itrv_ids,
                 }
                 criteria_str = protocol['EligibilityModule']['EligibilityCriteria']
                 yield metadata, criteria_str
                 
-    def check_protocol(self, protocol):
+    def check_protocol(self, protocol, derived):
         """ Parse clinical trial protocol and make sure it can be used as a data
             sample for eligibility criteria representation learning 
         """
         # Check the status of the CT is either completed or terminated
         status = protocol['StatusModule']['OverallStatus']
         if status not in ['Completed', 'Terminated']:
-            return False, None, None, None
+            return False, None, None, None, None, None
         
         # Check that the study is interventional
         study_type = protocol['DesignModule']['StudyType']
         if study_type != 'Interventional':
-            return False, None, None, None
+            return False, None, None, None, None, None
         
         # Check the study is about a drug test
         interventions = protocol[
             'ArmsInterventionsModule']['InterventionList']['Intervention']
         intervention_types = [i['InterventionType'] for i in interventions]
         if 'Drug' not in intervention_types:
-            return False, None, None, None
+            return False, None, None, None, None, None
         
         # Check the study has defined phases, then record phases
-        if 'PhaseList' not in protocol['DesignModule'].keys():
-            return False, None, None, None
+        if 'PhaseList' not in protocol['DesignModule']:
+            return False, None, None, None, None, None
         phases = protocol['DesignModule']['PhaseList']['Phase']
-        # if 'Not Applicable' in phases:
-        #     return False, None, None, None
         
         # Check that the protocol has an eligibility criterion section
-        if 'EligibilityCriteria' not in protocol['EligibilityModule'].keys():
-            return False, None, None, None
+        if 'EligibilityCriteria' not in protocol['EligibilityModule']:
+            return False, None, None, None, None, None
         
         # Check that the protocol has a condition list
         if 'ConditionList' not in protocol['ConditionsModule']:
-            return False, None, None, None
+            return False, None, None, None, None, None
         conditions = protocol['ConditionsModule']['ConditionList']['Condition']
-                      
+        
+        # Try to load condition mesh ids
+        try:
+            conds = derived['ConditionBrowseModule']['ConditionMeshList']
+            cond_ids = [c['ConditionMeshId'] for c in conds['ConditionMesh']]
+        except KeyError:
+            cond_ids = []
+        cond_treenums = self.convert_unique_ids_to_tree_nums(cond_ids)
+                
+        # Try to load intervention mesh ids
+        try:
+            itrvs = derived['InterventionBrowseModule']['InterventionMeshList']
+            itrv_ids = [i['InterventionMeshId'] for i in itrvs['InterventionMesh']]
+        except KeyError:
+            itrv_ids = []
+        itrv_tree_nums = self.convert_unique_ids_to_tree_nums(itrv_ids)
+        
         # Return that the protocol can be processed, status, and phase list
-        return True, status, phases, conditions
+        return True, status, phases, conditions, cond_treenums, itrv_tree_nums
+    
+    def convert_unique_ids_to_tree_nums(self, unique_ids):
+        """ Try to convert a maximum of unique id found in a clinical trial to
+            its tree num counterpart, solving the trailing zeros problem
+        """
+        tree_nums = []
+        for i in unique_ids:
+            try:
+                tree_nums.append(self.mesh_cw[i.replace('000', '', 1)])
+            except KeyError:
+                try:
+                    tree_nums.append(self.mesh_cw[i])
+                except KeyError:
+                    pass
+        return tree_nums
     
     
 @functional_datapipe('parse_criteria')
@@ -319,11 +355,13 @@ class CriteriaCSVWriter(IterDataPipe):
         """
         return [[
             metadata['criteria_str'] if i == 0 else '',
-            metadata['ct_path'] if i == 0 else '',
             metadata['complexity'] if i == 0 else '',
+            metadata['ct_path'],
             metadata['label'],
             metadata['phases'],
             metadata['conditions'],
+            metadata['condition_ids'],
+            metadata['intervention_ids'],
             c['category'],
             c['context'],
             c['subcontext'],

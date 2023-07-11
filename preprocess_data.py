@@ -15,23 +15,23 @@ RESULT_DIR = os.path.join('.', 'data', 'preprocessed')
 PLOT_PATH = os.path.join(RESULT_DIR, 'criteria_length_histogram.png')
 CSV_PATH = os.path.join(RESULT_DIR, 'parsed_criteria.csv')
 CSV_HEADERS = [
-    'criteria paragraph', 'ct path', 'complexity', 'label', 'phases',
-    'conditions', 'category', 'context', 'subcontext', 'individual criterion',
+    'criteria paragraph', 'complexity', 'ct path', 'label', 'phases',
+    'conditions', 'condition_ids', 'intervention_ids', 'category', 'context',
+    'subcontext', 'individual criterion',
 ]
 ENCODING = 'utf-8'
-NUM_STEPS = 110000
-NUM_WORKERS = 6
+NUM_STEPS = 110000  # actually 109685 in total
+NUM_WORKERS = 12
 NUM_WORKERS = min(NUM_WORKERS, max(os.cpu_count() - 4, os.cpu_count() // 4))
 LOAD_CSV_RESULTS = False
-DEBUG = False
 EXAMPLE = False
+DEBUG = False
 if DEBUG:
-    DATA_DIR = os.path.join('data_debug')
+    EXAMPLE = True
+    NUM_WORKERS = 0
     LOAD_CSV_RESULTS = False
-    NUM_WORKERS = 1
 if EXAMPLE:
-    assert DEBUG == False
-    NUM_STEPS = 100000
+    NUM_STEPS = 1000
     PLOT_PATH = os.path.join(RESULT_DIR, 'criteria_length_histogram_example.png')
     CSV_PATH = os.path.join(RESULT_DIR, 'parsed_criteria_example.csv')
 
@@ -98,7 +98,8 @@ def compute_result_stats(result_path: str,
     """ Evaluate parsing and how some interesting statistics
     """
     # Load data and compute some numbers
-    df = pd.read_csv(result_path)
+    df = pd.read_csv(result_path).dropna(subset='individual criterion')
+    df.to_csv(result_path)  # 4 individual criterions were NaN -> remove them
     n_easy = len(df.loc[df['complexity'] == 'easy'])
     n_hard = len(df.loc[df['complexity'] == 'hard'])
     n_criteria = len(df)

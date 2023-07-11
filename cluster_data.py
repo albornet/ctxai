@@ -13,21 +13,25 @@ from cluster_utils import plot_clusters
 DATA_DIR = os.path.join('data', 'preprocessed')
 LOAD_PATH = os.path.join('data', 'postprocessed')
 OUTPUT_PATH = os.path.join('.', 'cluster_plot.png')
-LOAD_DATA = False  # True
-CHOSEN_PHASES = ['Phase 2', 'Phase 3']
-CHOSEN_CONDS = ['Prostate Cancer']
+LOAD_DATA = False
+FILTER_BEFORE = True
+CHOSEN_PHASES = ['Phase 2', 'Phase 3']  # None to ignore this selection filter
+CHOSEN_CONDS = None  # ['Prostate Cancer']  # None to ignore this selection filter
+CHOSEN_COND_IDS = ['C04']  # None to ignore this selection filter
+CHOSEN_ITRV_IDS = ['D02']  # None to ignore this selection filter
 ENCODING = 'utf-8'
 DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-NUM_WORKERS = min(4, os.cpu_count() // 2)
-NUM_STEPS = 1718  # max ~= 1718 [* 64 = 110000]
+NUM_WORKERS = 0  # 0 for no multiprocessing
+NUM_WORKERS = min(NUM_WORKERS, os.cpu_count() // 2)
 BATCH_SIZE = 64
+NUM_STEPS = 100  # 2178930 // BATCH_SIZE + 1  # torch.inf
 MODEL_STR_MAP = {
     'pubmed-bert-token': 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext',
     'bioct-bert-token': 'domenicrosati/ClinicalTrialBioBert-NLI4CT',
     'pubmed-bert-sentence': 'pritamdeka/S-PubMedBert-MS-MARCO',
     'transformer-sentence': 'sentence-transformers/all-mpnet-base-v2',
 }
-MODEL_TYPE = 'bio-bert-ct'  # see MODEL_STR_MAP.keys()
+MODEL_TYPE = 'pubmed-bert-token'  # any of the MODEL_STR_MAP.keys()
 
 
 def main():
@@ -58,12 +62,17 @@ def main():
     
     # Save / load data
     if LOAD_DATA:
-        embeddings, raw_txts, labels = load_data(LOAD_PATH)
+        embeddings, raw_txts, labels = load_data(LOAD_PATH, MODEL_TYPE)
     else:
-        save_data(LOAD_PATH, embeddings, raw_txts, labels)
+        save_data(LOAD_PATH, MODEL_TYPE, embeddings, raw_txts, labels)
         
-    # Generate final plot    
-    _ = plot_clusters(embeddings, raw_txts, labels, CHOSEN_PHASES, CHOSEN_CONDS)
+    # Generate final plot
+    if FILTER_BEFORE:
+        _ = plot_clusters(
+            embeddings, raw_txts, labels, CHOSEN_PHASES, CHOSEN_CONDS,
+            CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
+    else:
+        _ = plot_clusters(embeddings, raw_txts, labels)
     plt.tight_layout()
     plt.savefig(OUTPUT_PATH, dpi=300)
     
@@ -100,26 +109,28 @@ def get_dataset(data_dir, tokenizer):
     sharded = dpi.ShardingFilter(files)  # split file processing by shards
     jsons = dpi.FileOpener(sharded, encoding=ENCODING)
     rows = dpi.CSVParser(jsons)
-    data_labels = ClinicalTrialFilter(rows, CHOSEN_PHASES, CHOSEN_CONDS)
+    data_labels = ClinicalTrialFilter(
+        rows, FILTER_BEFORE, CHOSEN_PHASES, CHOSEN_CONDS,
+        CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
     batches = dpi.Batcher(data_labels, batch_size=BATCH_SIZE)
     tokenized_batches = Tokenizer(batches, tokenizer)
     return tokenized_batches
 
 
-def save_data(path, embeddings, raw_txts, labels):
+def save_data(path, model_type, embeddings, raw_txts, labels):
     """ Saving function
     """
-    torch.save(embeddings, os.path.join(path, 'embeddings.pt'))
+    torch.save(embeddings, os.path.join(path, 'embeddings_%s.pt' % model_type))
     with open(os.path.join(path, 'raw_txts.pkl'), 'wb') as f:
         pickle.dump(raw_txts, f)
     with open(os.path.join(path, 'labels.pkl'), 'wb') as f:
         pickle.dump(labels, f)
 
 
-def load_data(path):
+def load_data(path, model_type):
     """ Loading function
     """
-    embeddings = torch.load(os.path.join(path, 'embeddings.pt'))
+    embeddings = torch.load(os.path.join(path, 'embeddings_%s.pt' % model_type))
     with open(os.path.join(path, 'raw_txts.pkl'), 'rb') as f:
         raw_txts = pickle.load(f)
     with open(os.path.join(path, 'labels.pkl'), 'rb') as f:
@@ -127,29 +138,35 @@ def load_data(path):
     return embeddings, raw_txts, labels
 
 
-
 class ClinicalTrialFilter(dpi.IterDataPipe):
     def __init__(self,
                  dp: dpi.IterDataPipe,
-                 selected_phases: str,
-                 selected_conditions: str):
+                 filter_before: bool,
+                 selected_phases: list[str],
+                 selected_conds: list[str],
+                 selected_cond_ids: list[str],
+                 selected_itrv_ids: list[str],
+                 ) -> None:
         """ Custom data pipeline to extract input text and label from CT csv file
             and to filter out trials that do not belong to a phase and condition
         """
         self.dp = dp
         all_column_names = next(iter(self.dp))
-        cols = ['individual criterion', 'phases', 'conditions', 'category',
-                'context', 'subcontext', 'label']
+        cols = ['individual criterion', 'phases', 'conditions', 'condition_ids',
+                'intervention_ids', 'category', 'context', 'subcontext', 'label']
         assert all([c in all_column_names for c in cols])
         self.col_id = {c: all_column_names.index(c) for c in cols}
+        self.filter_before = filter_before
         self.selected_phases = selected_phases
-        self.selected_conditions = selected_conditions
+        self.selected_conds = selected_conds
+        self.selected_cond_ids = selected_cond_ids
+        self.selected_itrv_ids = selected_itrv_ids
         
     def __iter__(self):
         for i, sample in enumerate(self.dp):
-            # Filter out unwanted lines of scv file
+            # Filter out unwanted lines of csv file
             if i == 0: continue
-            # if not self._filter_fn(sample): continue
+            if self.filter_before and not self._filter_fn(sample): continue
             ct_phases = ast.literal_eval(sample[self.col_id['phases']])
             ct_conditions = ast.literal_eval(sample[self.col_id['conditions']])
             ct_status = sample[self.col_id['label']].lower()
@@ -166,10 +183,23 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         """ Filter out CTs that do not belong to a given phase and condition
         """
         ct_phases = ast.literal_eval(sample[self.col_id['phases']])
-        ct_conditions = ast.literal_eval(sample[self.col_id['conditions']])
-        if all([p not in ct_phases for p in self.selected_phases]):
+        ct_conds = ast.literal_eval(sample[self.col_id['conditions']])
+        ct_cond_ids = ast.literal_eval(sample[self.col_id['condition_ids']])
+        ct_itrv_ids = ast.literal_eval(sample[self.col_id['intervention_ids']])
+        ct_cond_ids = [c for cc in ct_cond_ids for c in cc]  # flatten -> TODO: REMOVE?
+        ct_itrv_ids = [i for ii in ct_itrv_ids for i in ii]  # flatten -> TODO: REMOVE?
+        
+        if self.selected_phases is not None\
+        and all([p not in ct_phases for p in self.selected_phases]):
             return False
-        if all([c not in ct_conditions for c in self.selected_conditions]):
+        if self.selected_conds is not None\
+        and all([c not in ct_conds for c in self.selected_conds]):
+            return False
+        if self.selected_cond_ids is not None\
+        and all([not any([c.startswith(i) for i in self.selected_cond_ids]) for c in ct_cond_ids]):
+            return False
+        if self.selected_itrv_ids is not None\
+        and all([not any([c.startswith(i) for i in self.selected_itrv_ids]) for c in ct_itrv_ids]):
             return False
         return True
     
