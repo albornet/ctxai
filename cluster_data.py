@@ -12,26 +12,26 @@ from cluster_utils import plot_clusters
 
 DATA_DIR = os.path.join('data', 'preprocessed')
 LOAD_PATH = os.path.join('data', 'postprocessed')
-OUTPUT_PATH = os.path.join('images', 'cluster_plot.png')
+PLOT_OUTPUT_PATH = os.path.join('results', 'cluster_plot.png')
+REPORT_OUTPUT_PATH = os.path.join('results', 'cluster_report.txt')
 LOAD_DATA = False
-FILTER_BEFORE = True
-assert FILTER_BEFORE == True  # (for now, only this works)
-CHOSEN_PHASES = ['Phase 2', 'Phase 3']  # None to ignore this selection filter
+CHOSEN_PHASES = ['Phase 1']  # None to ignore this selection filter
 CHOSEN_COND_IDS = ['C04']  # None to ignore this selection filter
 CHOSEN_ITRV_IDS = ['D02']  # None to ignore this selection filter
 ENCODING = 'utf-8'
 DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-NUM_WORKERS = 0  # 0 for no multiprocessing
+NUM_WORKERS = 4  # 0 for no multiprocessing
 NUM_WORKERS = min(NUM_WORKERS, os.cpu_count() // 2)
 BATCH_SIZE = 64
-NUM_STEPS = 10  # 2178930 // BATCH_SIZE + 1  # torch.inf
+MAX_SELECTED_SAMPLES = 20000  # 264000
+NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
     'pubmed-bert-token': 'microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext',
     'bioct-bert-token': 'domenicrosati/ClinicalTrialBioBert-NLI4CT',
     'pubmed-bert-sentence': 'pritamdeka/S-PubMedBert-MS-MARCO',
     'transformer-sentence': 'sentence-transformers/all-mpnet-base-v2',
 }
-MODEL_TYPE = 'pubmed-bert-token'  # any of the MODEL_STR_MAP.keys()
+MODEL_TYPE = 'pubmed-bert-sentence'  # any of the MODEL_STR_MAP.keys()
 
 
 def main():
@@ -66,14 +66,11 @@ def main():
     else:
         save_data(LOAD_PATH, MODEL_TYPE, embeddings, raw_txts, labels)
         
-    # Generate final plot
-    if FILTER_BEFORE:
-        _ = plot_clusters(embeddings, raw_txts, labels)
-    else:
-        _ = plot_clusters(embeddings, raw_txts, labels,
-                          CHOSEN_PHASES, CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
+    # Generate final plot and final report
+    fig, reports = plot_clusters(embeddings, raw_txts, labels)
     plt.tight_layout()
-    plt.savefig(OUTPUT_PATH, dpi=300)
+    plt.savefig(PLOT_OUTPUT_PATH, dpi=300)
+    with open(REPORT_OUTPUT_PATH, 'w') as f: f.writelines(reports)
     
 
 def get_model_pipeline(model_type):
@@ -108,8 +105,7 @@ def get_dataset(data_dir, tokenizer):
     sharded = dpi.ShardingFilter(files)  # split file processing by shards
     jsons = dpi.FileOpener(sharded, encoding=ENCODING)
     rows = dpi.CSVParser(jsons)
-    data_labels = ClinicalTrialFilter(rows, FILTER_BEFORE, CHOSEN_PHASES,
-                                      CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
+    data_labels = ClinicalTrialFilter(rows, CHOSEN_PHASES, CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
     batches = dpi.Batcher(data_labels, batch_size=BATCH_SIZE)
     tokenized_batches = Tokenizer(batches, tokenizer)
     return tokenized_batches
@@ -139,7 +135,6 @@ def load_data(path, model_type):
 class ClinicalTrialFilter(dpi.IterDataPipe):
     def __init__(self,
                  dp: dpi.IterDataPipe,
-                 filter_before: bool,
                  selected_phases: list[str],
                  selected_cond_ids: list[str],
                  selected_itrv_ids: list[str],
@@ -153,7 +148,6 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
                 'intervention_ids', 'category', 'context', 'subcontext', 'label']
         assert all([c in all_column_names for c in cols])
         self.col_id = {c: all_column_names.index(c) for c in cols}
-        self.filter_before = filter_before
         self.selected_phases = selected_phases
         self.selected_cond_ids = selected_cond_ids
         self.selected_itrv_ids = selected_itrv_ids
@@ -162,7 +156,7 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         for i, sample in enumerate(self.dp):
             # Filter out unwanted lines of the csv file
             if i == 0: continue
-            if self.filter_before and not self._filter_fn(sample): continue
+            if not self._filter_fn(sample): continue
             
             # Yield sample and useful labels
             labels = {
@@ -199,13 +193,13 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         """ Retrieve criterion and contextual information
         """
         term_sequence = (
-            sample[self.col_id['context']],
+            sample[self.col_id['category']] + 'clusion criterion',
+            # sample[self.col_id['context']],
             sample[self.col_id['subcontext']],
-            sample[self.col_id['category']],
             sample[self.col_id['individual criterion']],
         )
         to_join = (s for s in term_sequence if len(s) > 0)
-        return ': '.join(to_join).lower()
+        return ' - '.join(to_join).lower()
     
     
 class Tokenizer(dpi.IterDataPipe):

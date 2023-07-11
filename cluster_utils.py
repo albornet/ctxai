@@ -7,10 +7,11 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from openTSNE import TSNE as oTSNE
 from scipy.spatial.distance import cdist
+from transformers import pipeline
 
 
 DIM_RED_ALGO = 'tsne'  # 'pca', 'tsne', 'otsne'
-RED_DIM = None  # None for no dimensionality reduction when clustering
+RED_DIM = 2  # None for no dimensionality reduction when clustering
 N_CPUS = min(10, os.cpu_count() // 2)  # for t-sne
 FIG_SIZE = (15, 5)
 TEXT_SIZE = 16
@@ -24,7 +25,8 @@ COLORS[:, -1] = NOT_NA_COLOR_ALPHA
 SCATTER_PARAMS = {'s': 50, 'linewidth': 0}
 LEAF_SEPARATION = 0.3
 MIN_CLUSTER_SIZE = 0.01  # in proportion of the number of data points
-MAX_CLUSTER_SIZE = 0.25  # in proportion of the number of data points
+MAX_CLUSTER_SIZE = 0.10  # in proportion of the number of data points
+SUMMARIZER = pipeline('summarization', model='facebook/bart-large-cnn')
 
 
 def plot_clusters(embeddings: torch.Tensor,
@@ -55,9 +57,9 @@ def plot_clusters(embeddings: torch.Tensor,
     # Cluster selected criteria, based on reduced embeddings
     print('Clustering %s eligibility criteria\n' % len(token_info['plot_data']))
     cluster_info = get_cluster_info(cluster_data)
-    generate_cluster_statistics(token_info, cluster_info)
+    reports = generate_cluster_report(token_info, cluster_info)
     plot_cluster_hierarchy(token_info, cluster_info, axs)
-    return fig
+    return fig, reports
 
 
 def get_cluster_info(cluster_data):
@@ -74,34 +76,78 @@ def get_cluster_info(cluster_data):
     )
     clusterer.fit(cluster_data)
 
-    # Get centroids and medoids
+    # Sort data points by how close they are from each cluster medoid
     n_clusters = clusterer.labels_.max() + 1  # -1 being ignored
-    centroids = [clusterer.weighted_cluster_centroid(i) for i in range(n_clusters)]
-    medoids = [clusterer.weighted_cluster_medoid(i) for i in range(n_clusters)]
-    
-    # Get index of closest data point
-    centroid_dists = cdist(centroids, cluster_data)
+    medoids = [clusterer.weighted_cluster_medoid(i) for i in range(n_clusters)]   
     medoid_dists = cdist(medoids, cluster_data)
-    centroid_closest_id = np.argmin(centroid_dists, axis=1)
-    medoid_closest_id = np.argmin(medoid_dists, axis=1)
+    medoid_sorting = np.argsort(medoid_dists, axis=1)
     
+    # Take only the 10 closest samples and avoid mixing clusters
+    medoid_closest_ids = []
+    for cluster_id in range(n_clusters):
+        cluster = np.where(clusterer.labels_ == cluster_id)[0]
+        sorted_cluster = [i for i in medoid_sorting[cluster_id] if i in cluster]
+        medoid_closest_ids.append(sorted_cluster[:10])
+        
     # Return cluster info
     return {
         'clusterer': clusterer,
+        'n_clusters': n_clusters,
         'cluster_lbls': clusterer.labels_,
-        'centroid_ids': centroid_closest_id,
-        'medoid_ids': medoid_closest_id,
+        'medoid_ids': medoid_closest_ids,
     }
 
 
-def generate_cluster_statistics(token_info, cluster_info):
-    """ Lalalalalalala
+def generate_cluster_report(token_info, cluster_info):
+    """ Characterize clusters and generates statistics given clinical trials
     """
-    centrois = [token_info['raw_txt'][i] for i in cluster_info['centroid_ids']]
-    medoids = [token_info['raw_txt'][i] for i in cluster_info['medoid_ids']]
+    # Identify one "typical" criterion string for each cluster of criteria
+    medoid_criterion_txts = [[token_info['raw_txt'][i] for i in sample_ids]
+                             for sample_ids in cluster_info['medoid_ids']]
+    pooled_criterion_txts = pool_cluster_criteria(medoid_criterion_txts)
     
-    import ipdb; ipdb.set_trace()
+    # Compute cluster prevalence by counting clinical trials
+    n_cts, n_ecs = len(set(token_info['ct_paths'])), len(token_info['ct_paths'])
+    cluster_paths = [
+        [p for p, l in zip(token_info['ct_paths'], cluster_info['cluster_lbls'])
+         if l == cluster_id] for cluster_id in range(cluster_info['n_clusters'])
+    ]
+    cluster_prevalences = [len(set(ps)) / n_cts for ps in cluster_paths]
     
+    # Generate a statistical report using cluster prevalence and typical criteria
+    zipped = list(zip(cluster_prevalences, pooled_criterion_txts))
+    zipped.sort(key=lambda x: x[0], reverse=True)
+    reports = [' - %i%% similar CTs used: %s\n' %(p * 100, t) for p, t in zipped]
+    title = 'Report of %s similar CTs, including %s ECs\n' % (n_cts, n_ecs)
+    return [title] + reports
+    
+    
+def pool_cluster_criteria(criterion_txts, method='closest'):
+    """ For each cluster, summarize all belonging criteria to a single sentence
+    """
+    # Taking cluster that is the closest to the cluster medoid
+    if method == 'closest':
+        pooled_criterion_txts = [txts[0] for txts in criterion_txts]
+    
+    # Use NLP to generate a summary (work in progress)
+    elif method == 'summary':
+        prompt = 'The following criteria are used. '
+        medoid_pooled_txts = [prompt + '; '.join(txt) for txt in criterion_txts]
+        pooled_criterion_txts = [
+            ''.join(
+                SUMMARIZER(
+                    text,
+                    max_length=50,
+                    min_length=10,
+                )[0]['summary_text'].split(prompt)
+            ) for text in medoid_pooled_txts
+        ]
+    
+    # Handle wrong method name and return the results
+    else:
+        raise ValueError('Wrong pooling method selected.')
+    return pooled_criterion_txts
+
 
 def plot_cluster_hierarchy(token_info, cluster_info, axs):
     """ Plot theoretical clusters (using labels), empirical clusters (using
@@ -181,9 +227,10 @@ def compute_reduced_repr(embeddings: np.ndarray,
             'n_iter': 10000,
             'n_iter_without_progress': 200,
             'metric': 'cosine',
+            'square_distances': True,
             'init': 'pca',
             'n_jobs': N_CPUS,
-            'verbose': 2,
+            'verbose': 1,
         }
         return TSNE(dim, **params).fit_transform(embeddings)
         
