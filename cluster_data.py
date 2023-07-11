@@ -12,7 +12,7 @@ from cluster_utils import plot_clusters
 
 DATA_DIR = os.path.join('data', 'preprocessed')
 LOAD_PATH = os.path.join('data', 'postprocessed')
-OUTPUT_PATH = os.path.join('.', 'cluster_plot.png')
+OUTPUT_PATH = os.path.join('images', 'cluster_plot.png')
 LOAD_DATA = False
 FILTER_BEFORE = True
 assert FILTER_BEFORE == True  # (for now, only this works)
