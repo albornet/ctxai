@@ -30,7 +30,7 @@ LEAF_SEPARATION = 0.3
 MIN_CLUSTER_SIZE = 0.01  # in proportion of the number of data points
 MAX_CLUSTER_SIZE = 0.10  # in proportion of the number of data points
 SUMMARIZER = pipeline('summarization', model='facebook/bart-large-cnn')
-ALL_CLASS_LABELS = [
+ALL_CLASS_LABELS = [  # TODO: put this in cluster_data (would fit better)
     'completed',
     'terminated',
     'withdrawn',

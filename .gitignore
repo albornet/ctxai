@@ -164,7 +164,9 @@ data/*/*/*
 data/postprocessed
 data/preprocessed
 data/mesh_data_2023.xml
+results/*
+*api-key.txt
+temp.py
 archives/*
 .vscode/*
 __pycache__/*
-temp.py
