@@ -30,16 +30,7 @@ LEAF_SEPARATION = 0.3
 MIN_CLUSTER_SIZE = 0.01  # in proportion of the number of data points
 MAX_CLUSTER_SIZE = 0.10  # in proportion of the number of data points
 SUMMARIZER = pipeline('summarization', model='facebook/bart-large-cnn')
-ALL_CLASS_LABELS = [  # TODO: put this in cluster_data (would fit better)
-    'completed',
-    'terminated',
-    'withdrawn',
-    'suspended',
-    'recruiting',
-    'unknown status',
-    'not yet recruiting',
-    'active, not recruiting',
-]
+
 
 def plot_clusters(embeddings: torch.Tensor,
                   raw_txt: list[str],
@@ -70,7 +61,8 @@ def plot_clusters(embeddings: torch.Tensor,
     token_info = {
         'plot_data': plot_data,
         'raw_txt': raw_txt,
-        'class_lbls': [l['ct_status'] for l in labels],
+        'ct_lbls': [l['ct_status'] for l in labels],
+        'unique_lbls': list(set([l['ct_status'] for l in labels])),
         'ct_paths': [l['ct_path'] for l in labels],
     }
     
@@ -122,10 +114,8 @@ def generate_cluster_reports(token_info, cluster_info):
     """ Characterize clusters and generate statistics given clinical trials
     """
     # Compute useful statistics
-    n_cts = len(set(token_info['ct_paths']))
-    n_ecs = len(token_info['ct_paths'])
     cluster_prevalences, label_prevalences =\
-        compute_cluster_statistics(token_info, cluster_info, n_cts)
+        compute_cluster_statistics(token_info, cluster_info)
     
     # Identify one "typical" criterion string for each cluster of criteria
     txts_grouped_by_cluster = [
@@ -138,7 +128,13 @@ def generate_cluster_reports(token_info, cluster_info):
     # Generate a report from the computed prevalences and typical criteria
     text_report = generate_text_report(txts_grouped_by_cluster)
     statistics_report = generate_statistics_report(
-        cluster_typicals, cluster_prevalences, label_prevalences, n_cts, n_ecs)
+        cluster_typicals=cluster_typicals,
+        cluster_prevalences=cluster_prevalences,
+        label_prevalences=label_prevalences,
+        unique_labels=token_info['unique_lbls'],
+        n_cts=len(set(token_info['ct_paths'])),
+        n_ecs=len(token_info['ct_paths']),
+    )
     return text_report, statistics_report
 
 
@@ -157,6 +153,7 @@ def generate_text_report(grouped_by_cluster: list[list[str]]
 def generate_statistics_report(cluster_typicals: list[str],
                                cluster_prevalences: list[float],
                                label_prevalences: list[dict],
+                               unique_labels: list[str],
                                n_cts: int,
                                n_ecs: int,
                                ) -> list[list[str]]:
@@ -166,7 +163,7 @@ def generate_statistics_report(cluster_typicals: list[str],
     zipped = list(zip(cluster_prevalences, cluster_typicals, label_prevalences))
     zipped.sort(key=lambda x: x[0], reverse=True)  # most prevalent cluster first
     headers = ['Absolute cluster prevalence', 'Cluster representative']
-    headers += ['Relative status prevalence (%s)' % s for s in ALL_CLASS_LABELS]
+    headers += ['Relative status prevalence (%s)' % s for s in unique_labels]
     report_lines = []
     for abs_prev, txt, rel_prev_ordered_dict in zipped:
         line = ['%i%%' % (abs_prev * 100), txt]
@@ -176,8 +173,8 @@ def generate_statistics_report(cluster_typicals: list[str],
     return [headers] + report_lines + [[final_line]]
 
 
-def compute_cluster_statistics(token_info, cluster_info, n_cts):
-    """ Compute CT prevalence between clusters and label prevalence within clusters
+def compute_cluster_statistics(token_info, cluster_info):
+    """ Compute CT prevalence between clusters & label prevalence within clusters
     """        
     # Compute absolute cluster prevalence by counting clinical trials
     zipped_paths = list(
@@ -187,27 +184,31 @@ def compute_cluster_statistics(token_info, cluster_info, n_cts):
         [p for p, l in zipped_paths if l == cluster_id]
         for cluster_id in range(cluster_info['n_clusters'])
     ]
+    n_cts = len(set(token_info['ct_paths']))
     cluster_prevalences = [len(set(ps)) / n_cts for ps in cluster_sample_paths]
     
     # Compute relative label prevalence inside each cluster
     zipped_labels = list(
-        zip(token_info['class_lbls'], cluster_info['cluster_lbls'])
+        zip(token_info['ct_lbls'], cluster_info['cluster_lbls'])
     )
     cluster_sample_labels = [
         [p for p, l in zipped_labels if l == cluster_id]
         for cluster_id in range(cluster_info['n_clusters'])
     ]
-    label_prevalences = [compute_proportions(c) for c in cluster_sample_labels]
+    label_prevalences = [
+        compute_proportions(c, token_info['unique_lbls'])
+        for c in cluster_sample_labels
+    ]
     
     # Return computed statistics
     return cluster_prevalences, label_prevalences
 
 
-def compute_proportions(lbl_list):
+def compute_proportions(lbl_list, unique_lbls):
     """ Compute proportion of each CT label within each cluster
         TODO: count only one criterion per CT (here: count all criteria)
     """
-    result = OrderedDict([(k, 0.0) for k in ALL_CLASS_LABELS])
+    result = OrderedDict([(k, 0.0) for k in unique_lbls])
     counter = Counter(lbl_list)
     total_count = len(lbl_list)
     result.update({lbl: count / total_count for lbl, count in counter.items()})
@@ -279,7 +280,7 @@ def plot_cluster_hierarchy(token_info: dict,
     # Load data
     plot_data = token_info['plot_data']
     plot_kwargs = {} if red_dim <= 2 else {'projection': '3d'}
-    n_labels = len(set(token_info['class_lbls']))
+    n_labels = len(set(token_info['ct_lbls']))
     n_clusters = cluster_info['cluster_lbls'].max() + 1
     
     # Assign label colors and evaluate cluster purity (not ready yet)    
@@ -323,7 +324,7 @@ def assign_cluster_colors(token_info, cluster_info):
     """ Used to be more complicated, but for now just assign fixed colours
     """
     # Generate class and cluster indices
-    token_classes = sorted(set(token_info['class_lbls']))
+    token_classes = sorted(set(token_info['ct_lbls']))
     cluster_classes = sorted(set(cluster_info['cluster_lbls']))
     token_to_id = {v: i for i, v in enumerate(token_classes)}
     cluster_to_id = {v: i for i, v in enumerate(cluster_classes)}
@@ -331,7 +332,7 @@ def assign_cluster_colors(token_info, cluster_info):
     # Create class and cluster colors for all samples
     cluster_colors = [COLORS[cluster_to_id[c]] if c >= 0 else NA_COLOR
                       for c in cluster_info['cluster_lbls']]
-    class_colors = [COLORS[token_to_id[c]] for c in token_info['class_lbls']]
+    class_colors = [COLORS[token_to_id[c]] for c in token_info['ct_lbls']]
     return cluster_colors, class_colors
 
 

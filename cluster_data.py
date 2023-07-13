@@ -20,7 +20,7 @@ RESULT_DIR = os.path.join('results', INPUT_FORMAT)
 PLOT_OUTPUT_PATH = os.path.join(RESULT_DIR, 'cluster_plot.png')
 STAT_REPORT_OUTPUT_PATH = os.path.join(RESULT_DIR, 'cluster_report_stat.csv')
 TEXT_REPORT_OUTPUT_PATH = os.path.join(RESULT_DIR, 'cluster_report_text.csv')
-CHOSEN_LABELS = None  # ['completed', 'terminated']  # None to ignore this section filter
+CHOSEN_LABELS = None  # ['completed', 'suspended', 'withdrawn', 'terminated', 'unknown status']  # None to ignore this section filter
 CHOSEN_PHASES = None  # ['Phase 2']  # None to ignore this selection filter
 CHOSEN_COND_IDS = None  # ['C04']  # None to ignore this selection filter
 CHOSEN_ITRV_IDS = None  # ['D02']  # None to ignore this selection filter
@@ -38,6 +38,17 @@ MODEL_STR_MAP = {
     'transformer-sentence': 'sentence-transformers/all-mpnet-base-v2',
 }
 MODEL_TYPE = 'pubmed-bert-sentence'  # anything in MODEL_STR_MAP.keys()
+LABEL_MAP = {
+    'completed': 'good',
+    'suspended': 'bad',
+    'withdrawn': 'bad',
+    'terminated': 'bad',
+    'unknown status': 'bad',
+    'recruiting': '?',
+    'not yet recruiting': '?',
+    'active, not recruiting': '?',
+}  # set to None for using raw labels
+LABEL_MAP = None
 
 
 def main():
@@ -115,8 +126,9 @@ def get_dataset(data_dir, tokenizer):
     sharded = dpi.ShardingFilter(files)  # split file processing by shards
     jsons = dpi.FileOpener(sharded, encoding=ENCODING)
     rows = dpi.CSVParser(jsons)
-    data_labels = ClinicalTrialFilter(rows, CHOSEN_LABELS, CHOSEN_PHASES,
-                                      CHOSEN_COND_IDS, CHOSEN_ITRV_IDS)
+    data_labels = ClinicalTrialFilter(
+        rows, LABEL_MAP, CHOSEN_LABELS, CHOSEN_PHASES, CHOSEN_COND_IDS, CHOSEN_ITRV_IDS,
+    )
     batches = dpi.Batcher(data_labels, batch_size=BATCH_SIZE)
     tokenized_batches = Tokenizer(batches, tokenizer)
     return tokenized_batches
@@ -147,6 +159,7 @@ def load_data(dir_, model_type):
 class ClinicalTrialFilter(dpi.IterDataPipe):
     def __init__(self,
                  dp: dpi.IterDataPipe,
+                 label_map: dict[str, str],
                  chosen_labels: list[str],
                  chosen_phases: list[str],
                  chosen_cond_ids: list[str],
@@ -161,6 +174,7 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
                 'intervention_ids', 'category', 'context', 'subcontext', 'label']
         assert all([c in all_column_names for c in cols])
         self.col_id = {c: all_column_names.index(c) for c in cols}
+        self.label_map = label_map
         self.chosen_labels = chosen_labels
         self.chosen_phases = chosen_phases
         self.chosen_cond_ids = chosen_cond_ids
@@ -175,6 +189,7 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
             if not self._filter_fn(sample, ct_status): continue
             
             # Yield sample and labels if all is good
+            if self.label_map is not None: ct_status = self.label_map[ct_status]
             labels = {'ct_path': ct_path, 'ct_status': ct_status}
             yield self._build_input_text(sample), labels
             
@@ -239,11 +254,13 @@ class Tokenizer(dpi.IterDataPipe):
             yield self.tokenize_fn(input_batch), input_batch, label_batch
     
     def tokenize_fn(self, batch):
-        return self.tokenizer(batch,
-                              padding=True,
-                              truncation=True,
-                              max_length=512,
-                              return_tensors='pt')
+        return self.tokenizer(
+            batch,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors='pt'
+        )
             
             
 if __name__ == '__main__':
