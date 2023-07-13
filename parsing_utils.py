@@ -1,5 +1,6 @@
 import os
 import re
+import pandas as pd
 import json
 import nltk
 nltk.download('punkt')
@@ -19,6 +20,7 @@ INCLUSION_KEYS = [s + '\:?\.?' for s in [
     'inclusion criteria', 'inclusion criterion', 'inclusions?', 'included',
     'eligible', 'allowed', 'must have', 'must be', 'patients? have ',
     'patients? had ', 'had to have', 'required', 'populations? consisted',
+    'not excluded', 'not be excluded',
 ]]
 CONTEXT_KEYS = [
     'prior medications?', 'prior treatments?', 'concurrent medications?',
@@ -41,12 +43,13 @@ SUBCONTEXT_KEYS = [  # TODO (?) ASSOCIATE EVERY KEY TO A CONTEXT KEY (?)
     'other treatments?', 'previous hormonal therapy', 'in either eyes?',
     'in study eyes?', 'one of the following', 'body mass index', 'bmi',
     'eligible subtypes?', 'hormone receptor status', 'menopausal status',
-    'at least 1 of the following factors',
+    'at least 1 of the following factors', 'serology', 'chemistry',
 ]
 NON_CONTEXT_KEYS = ['notes?', 'amended']  # not used for now
 SIMILARITY_FN = lambda s, k: SequenceMatcher(None, s, k).ratio()
 MAX_SIMILARITY_FN = lambda s, keys: max([SIMILARITY_FN(s.lower(), k) for k in keys])
 MESH_CROSSWALK_PATH = os.path.join('data', 'mesh_crosswalk.json')
+
 
 @functional_datapipe('filter_clinical_trials')
 class ClinicalTrialFilter(IterDataPipe):
@@ -191,6 +194,8 @@ class CriteriaParser(IterDataPipe):
             # Match sentence to exclusion and inclusion key expressions
             found_in = any(re.search(k, sentence, re.IGNORECASE) for k in INCLUSION_KEYS)
             found_ex = any(re.search(k, sentence, re.IGNORECASE) for k in EXCLUSION_KEYS)
+            if re.search('not (be )?excluded', sentence, re.IGNORECASE):
+                found_ex = False  # special case (could do better?)
             
             # Compute max similarity with any key, and if a prev update is needed
             key_similarity = MAX_SIMILARITY_FN(sentence, INCLUSION_KEYS + EXCLUSION_KEYS)
@@ -208,9 +213,8 @@ class CriteriaParser(IterDataPipe):
                 parsed.append({'category': category, 'text': sentence})
                 
         # Try to further split parsed criteria, using empirical methods
-        parsed = self.contextualize_criteria_with_colons(parsed)
-        parsed = self.post_process_criteria_by_semicolon(parsed)
-        # parsed = self.post_process_criteria_by_comma(parsed)  # produced too many false positives
+        parsed = self.contextualize_criteria(parsed)
+        parsed = self.post_process_criteria(parsed)
         
         # Return final list of criteria, as well as how easy it was to split
         parsed = [c for c in parsed if len(c['text']) >= is_bug_thresh]
@@ -260,10 +264,10 @@ class CriteriaParser(IterDataPipe):
         return category, prev_category
     
     @staticmethod
-    def contextualize_criteria_with_colons(parsed_criteria: list[dict[str, str]],
-                                           is_context_thresh: float=0.9,
-                                           is_subcontext_thresh: float=0.8,
-                                           ) -> list[dict[str, str]]:
+    def contextualize_criteria(parsed_criteria: list[dict[str, str]],
+                               is_context_thresh: float=0.9,
+                               is_subcontext_thresh: float=0.8,
+                               ) -> list[dict[str, str]]:
         """ Try to add context to all criteria identified by using keys that tend
             to appear as subsections of inclusion/exclusion criteria.
             The keys are also used to split criteria when they are not written
@@ -306,33 +310,29 @@ class CriteriaParser(IterDataPipe):
             
         # Return newly parsed set of criteria, with added context
         return contextualized
-    
+        
     @staticmethod
-    def post_process_criteria_by_semicolon(parsed_criteria: list[dict[str, str]],
-                                           ) -> list[dict[str, str]]:
-        """ Simply split each criterion text by semi-colon (could try to fuse
-            back split parts that are too short?)
+    def post_process_criteria(parsed_criteria: list[dict[str, str]],
+                              placeholder='*'
+                              ) -> list[dict[str, str]]:
+        """ Split each criterion by semicolon, avoiding false positives, such as
+            within parentheses or quotation marks, also remove '<br>n' bugs
         """
         post_parsed = []
         for criterion in parsed_criteria:
-            splits = criterion['text'].split(';')
+            # Replace false positive semicolon separators by '*' characters
+            regex = r'\([^)]*\)|\[[^\]]*\]|"[^"]*"|\*[^*]*\*|\'[^\']*\''
+            replace_fn = lambda match: match.group(0).replace(';', placeholder)
+            hidden_criterion = re.sub(regex, replace_fn, criterion['text'])
+            hidden_criterion = re.sub(r'<br>\d+\)?\s*', '', hidden_criterion)
+            
+            # Split by semicolon and put back semicolons that were protected
+            splits = hidden_criterion.split(';')
+            splits = [split.replace(placeholder, ';') for split in splits]        
             post_parsed.extend([dict(criterion, text=s.strip()) for s in splits])
-        return post_parsed
-    
-    @staticmethod
-    def split_by_semicolon(s: str, placeholder='*') -> list[str]:
-        """ Split a string by semicolons into big phrases, trying to avoid false
-            positive cases, such as within parentheses or quotation marks
-        """
-        # Replace semicolons that are not big phrase separators by '*' characters
-        regex = r'\([^)]*\)|\[[^\]]*\]|"[^"]*"|\*[^*]*\*|\'[^\']*\''
-        replace_fn = lambda match: match.group(0).replace(';', placeholder)
-        s = re.sub(regex, replace_fn, s)
         
-        # Split by commas and put back commas that were replaced
-        splits = s.split(';')
-        return [split.replace(placeholder, ';') for split in splits]
-    
+        # Return post-processed criteria
+        return post_parsed
         
 @functional_datapipe('write_csv')
 class CriteriaCSVWriter(IterDataPipe):
@@ -369,4 +369,73 @@ class CriteriaCSVWriter(IterDataPipe):
                      .replace('≤', '< or equal to')
                      .strip('- '),
         ] for i, c in enumerate(parsed_criteria)]
-        
+
+
+@functional_datapipe('read_xlsx_lines')
+class CustomXLSXLineReader(IterDataPipe):
+    def __init__(self, dp):
+        """ Lalalala
+        """
+        self.dp = dp
+        self.metadata_mapping = {
+            'trialid': 'ct_path',
+            'recruitmentStatusNorm': 'label',
+            'phaseNorm': 'phases',
+            'conditions_': 'conditions',
+            'conditions': 'condition_ids',
+            'interventions': 'intervention_ids',
+        }
+        with open(MESH_CROSSWALK_PATH, 'r') as f:
+            self.mesh_cw = json.load(f)
+        self.intervention_remove = ['Drug: ', 'Biological: ', 'Radiation: ',
+                                    'Procedure: ', 'Other: ', 'Device: ']
+    
+    def __iter__(self):
+        for file_name in self.dp:
+            sheet_df = pd.ExcelFile(file_name).parse('metadata')
+            crit_str_list = self.extract_criteria_strs(sheet_df)
+            metatdata_dict_list = self.extract_metadata_dicts(sheet_df)
+            for crit_str, metadata in zip(crit_str_list, metatdata_dict_list):
+                yield metadata, crit_str
+    
+    @staticmethod
+    def extract_criteria_strs(sheet_df: pd.DataFrame) -> list[str]:
+        """ Lalalalal
+        """
+        in_crit_strs = sheet_df['inclusionCriteriaNorm'].fillna('')
+        ex_crit_strs = sheet_df['exclusionCriteriaNorm'].fillna('')
+        crit_strs = in_crit_strs + '\n\n' + ex_crit_strs
+        return crit_strs
+    
+    def extract_metadata_dicts(self, sheet_df: pd.DataFrame) -> list[dict]:
+        """ Lalalalal
+        """
+        sheet_df['conditions_'] = sheet_df['conditions']
+        sheet_df = sheet_df[list(self.metadata_mapping.keys())]
+        sheet_df = sheet_df.rename(columns=self.metadata_mapping)
+        split_fn = lambda s: s.split('; ')
+        map_fn = lambda l: self.convert_unique_ids_to_tree_nums(l)
+        sheet_df['conditions'] = sheet_df['conditions'].apply(split_fn)
+        sheet_df['condition_ids'] = sheet_df['condition_ids'].apply(split_fn)
+        sheet_df['condition_ids'] = sheet_df['condition_ids'].apply(map_fn)
+        sheet_df['intervention_ids'] = sheet_df['intervention_ids'].apply(split_fn)
+        sheet_df['intervention_ids'] = sheet_df['intervention_ids'].apply(map_fn)
+        list_of_metadata = sheet_df.to_dict('records')
+        return list_of_metadata
+    
+    def convert_unique_ids_to_tree_nums(self, unique_names):
+        """ Try to convert a maximum of unique names found in a clinical trial to
+            its tree num counterpart, solving the trailing zeros problem
+        """
+        for r in self.intervention_remove:
+            unique_names = [n.replace(r, '') for n in unique_names]
+        tree_nums = []
+        for n in unique_names:
+            try:
+                tree_nums.append(self.mesh_cw[n.replace('000', '', 1)])
+            except KeyError:
+                try:
+                    tree_nums.append(self.mesh_cw[n])
+                except KeyError:
+                    pass
+        return tree_nums

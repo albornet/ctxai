@@ -4,14 +4,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import torchdata.datapipes.iter as dpi
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
-from parsing_utils import ClinicalTrialFilter, CriteriaParser, CriteriaCSVWriter
+from parsing_utils import (
+    ClinicalTrialFilter,
+    CriteriaParser,
+    CriteriaCSVWriter,
+    CustomXLSXLineReader,
+)
 from statistics import mean, stdev, median, mode
 from tqdm import tqdm
 from typing import Union
 
 
-DATA_DIR = os.path.join('.', 'data', 'ALLAPIJSON')
-RESULT_DIR = os.path.join('.', 'data', 'preprocessed')
+INPUT_FORMAT = 'json'  # 'json', 'xlsx'
+LOAD_CSV_RESULTS = False
+EXAMPLE = False
+DATA_DIR = os.path.join('data', 'raw_files')
+RESULT_DIR = os.path.join('data', 'preprocessed', INPUT_FORMAT)
 PLOT_PATH = os.path.join(RESULT_DIR, 'criteria_length_histogram.png')
 CSV_PATH = os.path.join(RESULT_DIR, 'parsed_criteria.csv')
 CSV_HEADERS = [
@@ -20,18 +28,11 @@ CSV_HEADERS = [
     'subcontext', 'individual criterion',
 ]
 ENCODING = 'utf-8'
-NUM_STEPS = 110000  # actually 109685 in total
+NUM_STEPS = 110000
 NUM_WORKERS = 12
 NUM_WORKERS = min(NUM_WORKERS, max(os.cpu_count() - 4, os.cpu_count() // 4))
-LOAD_CSV_RESULTS = False
-EXAMPLE = True
-DEBUG = False
-if DEBUG:
-    EXAMPLE = True
-    NUM_WORKERS = 0
-    LOAD_CSV_RESULTS = False
 if EXAMPLE:
-    NUM_STEPS = 1000
+    NUM_STEPS = NUM_WORKERS
     PLOT_PATH = os.path.join(RESULT_DIR, 'criteria_length_histogram_example.png')
     CSV_PATH = os.path.join(RESULT_DIR, 'parsed_criteria_example.csv')
 
@@ -47,52 +48,52 @@ def main():
             writer.writerow(CSV_HEADERS)
             
         # Initialize data processors
-        ds = get_dataset(shuffle=True)  # parse CT into individual criteria lists
+        ds = get_dataset(DATA_DIR, INPUT_FORMAT, shuffle=True)
         rs = MultiProcessingReadingService(num_workers=NUM_WORKERS)
         dl = DataLoader2(ds, reading_service=rs)
         
         # Write parsed criteria to the output file
-        num_steps = min(NUM_STEPS, total_number_of_files_to_process(DATA_DIR))
         for i, data in tqdm(enumerate(dl),
-                            total=num_steps,
-                            desc='Parsing criteria'):
+                            total=NUM_STEPS,
+                            desc='Parsing criteria',
+                            leave=False):
             with open(CSV_PATH, 'a', newline='', encoding=ENCODING) as f:
                 writer = csv.writer(f)
                 writer.writerows(data)
-            if i >= num_steps - 1: break
+            if i >= NUM_STEPS - 1: break
         dl.shutdown()
     
     # Evaluate csv result file, and compute some statistics
-    compute_result_stats(CSV_PATH)
+    compute_result_stats(CSV_PATH, PLOT_PATH)
     
     
-def total_number_of_files_to_process(data_dir=DATA_DIR):
-    """ Compute the total number of files to be processed by the data pipeline
-    """
-    count = 0
-    for _, _, file_names in os.walk(data_dir):
-        for file_name in file_names:
-            if file_name.endswith('.json'): count += 1
-    return count
-    
-    
-def get_dataset(data_dir=DATA_DIR, shuffle=False):
+def get_dataset(data_dir, input_format, shuffle=False):
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
-    files = dpi.FileLister(data_dir, recursive=True, masks='*.json')
+    # Load correct files
+    files = dpi.FileLister(data_dir, recursive=True, masks='*.%s' % input_format)
     sharded = dpi.ShardingFilter(files)  # split file processing by shards
     if shuffle: sharded = dpi.Shuffler(sharded)
-    jsons = dpi.FileOpener(sharded, encoding=ENCODING)
-    dicts = dpi.JsonParser(jsons)
-    raw_samples = ClinicalTrialFilter(dicts)
+    
+    # Load data inside each file
+    if input_format == 'json': 
+        jsons = dpi.FileOpener(sharded, encoding=ENCODING)
+        dicts = dpi.JsonParser(jsons)
+        raw_samples = ClinicalTrialFilter(dicts)
+    elif input_format == 'xlsx':
+        raw_samples = CustomXLSXLineReader(sharded)
+    else:
+        raise ValueError('Wrong input format selected.')
+        
+    # Parse criteria
     parsed_samples = CriteriaParser(raw_samples)
     written = CriteriaCSVWriter(parsed_samples)
     return written
 
     
 def compute_result_stats(result_path: str,
-                         plot_path=PLOT_PATH,
+                         plot_path: str,
                          is_long_criterion_thresh: int=400,
                          ) -> None:
     """ Evaluate parsing and how some interesting statistics

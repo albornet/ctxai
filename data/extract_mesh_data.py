@@ -20,11 +20,14 @@ def extract_mesh_data_from_xml(file_path):
     
     for record in root.findall('.//DescriptorRecord'):
         descriptor_ui = record.find('DescriptorUI').text
+        descriptor_name = record.find('.//DescriptorName/String').text
         tree_numbers = [
             tn.text for tn in record.findall('.//TreeNumberList/TreeNumber')
         ]
         if descriptor_ui not in data:
             data[descriptor_ui] = tree_numbers
+        if descriptor_name not in data:
+            data[descriptor_name] = tree_numbers
 
     return data
 
