@@ -1,14 +1,17 @@
 import os
+import time
+import openai
 import torch
 import numpy as np
 import hdbscan 
 import matplotlib.pyplot as plt
 from collections import Counter, OrderedDict
 from itertools import zip_longest
+from tqdm import tqdm
+from openai.error import RateLimitError
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import cdist
-from transformers import pipeline
 
 
 CLUSTER_DIM_RED_ALGO = 'tsne'  # 'pca', 'tsne'
@@ -29,7 +32,6 @@ SCATTER_PARAMS = {'s': 50, 'linewidth': 0}
 LEAF_SEPARATION = 0.3
 MIN_CLUSTER_SIZE = 0.01  # in proportion of the number of data points
 MAX_CLUSTER_SIZE = 0.10  # in proportion of the number of data points
-SUMMARIZER = pipeline('summarization', model='facebook/bart-large-cnn')
 
 
 def plot_clusters(embeddings: torch.Tensor,
@@ -67,7 +69,7 @@ def plot_clusters(embeddings: torch.Tensor,
     }
     
     # Cluster selected criteria, based on reduced embeddings
-    print('Clustering %s eligibility criteria\n' % len(token_info['plot_data']))
+    print('Clustering %s eligibility criteria' % len(token_info['plot_data']))
     cluster_info = get_cluster_info(cluster_data)
     text_report, stat_report = generate_cluster_reports(token_info, cluster_info)
     plot_cluster_hierarchy(token_info, cluster_info, fig, red_dim=PLOT_RED_DIM)
@@ -122,12 +124,15 @@ def generate_cluster_reports(token_info, cluster_info):
         [token_info['raw_txt'][i] for i in sample_ids]
         for sample_ids in cluster_info['medoid_ids']
     ]  # each cluster group includes criteria sorted by distance to its medoid
-    close_medoid_criterion_txts = [txts[:10] for txts in txts_grouped_by_cluster]
+    close_medoid_criterion_txts = [txts[:20] for txts in txts_grouped_by_cluster]
     cluster_typicals = pool_cluster_criteria(close_medoid_criterion_txts)
     
     # Generate a report from the computed prevalences and typical criteria
-    text_report = generate_text_report(txts_grouped_by_cluster)
-    statistics_report = generate_statistics_report(
+    text_report = generate_text_report(
+        txts_grouped_by_cluster,
+        cluster_prevalences
+    )
+    stat_report = generate_stat_report(
         cluster_typicals=cluster_typicals,
         cluster_prevalences=cluster_prevalences,
         label_prevalences=label_prevalences,
@@ -135,28 +140,31 @@ def generate_cluster_reports(token_info, cluster_info):
         n_cts=len(set(token_info['ct_paths'])),
         n_ecs=len(token_info['ct_paths']),
     )
-    return text_report, statistics_report
+    return text_report, stat_report
 
 
-def generate_text_report(grouped_by_cluster: list[list[str]]
+def generate_text_report(grouped_by_cluster: list[list[str]],
+                         cluster_prevalences: list[float],
                          ) -> list[list[str]]:
     """ Generate a report to write all clusters' criteria in a csv file
     """
-    headers = ['Cluster #%i (sorted by size, i.e., not by CT prevalence)' % i
+    zipped = list(zip(cluster_prevalences, grouped_by_cluster))
+    zipped.sort(key=lambda x: x[0], reverse=True)  # most prevalent cluster first
+    sorted_groups = [z[1] for z in zipped]  # sorted(grouped_by_cluster, key=len, reverse=True)
+    padded_and_transposed = zip_longest(*sorted_groups, fillvalue='')
+    text_report = list(map(list, padded_and_transposed))
+    headers = ['Cluster #%i (sorted by CT prevalence)' % i
                for i in range(len(grouped_by_cluster))]
-    sorted_by_cluster_size = sorted(grouped_by_cluster, key=len, reverse=True)
-    padded_and_transposed = zip_longest(*sorted_by_cluster_size, fillvalue='')
-    final_report = list(map(list, padded_and_transposed))
-    return [headers] + final_report
+    return [headers] + text_report
 
 
-def generate_statistics_report(cluster_typicals: list[str],
-                               cluster_prevalences: list[float],
-                               label_prevalences: list[dict],
-                               unique_labels: list[str],
-                               n_cts: int,
-                               n_ecs: int,
-                               ) -> list[list[str]]:
+def generate_stat_report(cluster_typicals: list[str],
+                         cluster_prevalences: list[float],
+                         label_prevalences: list[dict],
+                         unique_labels: list[str],
+                         n_cts: int,
+                         n_ecs: int,
+                         ) -> list[list[str]]:
     """ Write a report for all cluster, using cluster typical representative
         text, CT prevalence between clusters and label prevalence within cluster
     """
@@ -215,58 +223,73 @@ def compute_proportions(lbl_list, unique_lbls):
     return result
 
    
-def pool_cluster_criteria(criterion_txts, method='shortest'):
+def pool_cluster_criteria(criterion_txts, method='chatgpt'):
     """ For each cluster, summarize all belonging criteria to a single sentence
     """
-    # Take criterion that is the closest to the cluster medoid
+    # Take the criterion closest to the cluster medoid
     if method == 'closest':
         pooled_criterion_txts = [txts[0] for txts in criterion_txts]
     
-    # Take shortest criterion from the 10 closest to the cluster medoid
+    # Take shortest from the 10 criteria closest to the cluster medoid
     elif method == 'shortest':
         pooled_criterion_txts = [min(txts, key=len) for txts in criterion_txts]
     
-    # Use a huggingface summarization model to generate a summary
-    elif method == 'summary':
-        prompt = 'The following criteria are used. '
-        medoid_pooled_txts = [prompt + '; '.join(txt) for txt in criterion_txts]
-        pooled_criterion_txts = [
-            ''.join(
-                SUMMARIZER(
-                    text,
-                    max_length=50,
-                    min_length=10,
-                )[0]['summary_text'].split(prompt)
-            ) for text in medoid_pooled_txts
-        ]
-    
-#     # Use ChatGPT-3.5 to summarize each cluster of criteria
-#     elif method == 'chatgpt':
-#         api_path = os.path.join('data', 'api-key.txt')
-#         try:
-#             with open(api_path, 'r') as f: openai.api_key = f.read()
-#         except:
-#             raise FileNotFoundError('You must have an api-key at %s' % api_path)
+    # Use ChatGPT-3.5 to summarize the 10 criteria closest to the cluster medoid
+    elif method == 'chatgpt':
+        # Authentificate with a valid api-key
+        api_path = os.path.join('data', 'api-key-risklick.txt')
+        try:
+            with open(api_path, 'r') as f: openai.api_key = f.read()
+        except:
+            raise FileNotFoundError('You must have an api-key at %s' % api_path)
         
-#         for cluster_criteria in criterion_txts:
-#             question = """I have a list of eligility criteria. They are all similar to each other.
-# I would like you to generate a single and concise eligibility criterion that best represents all listed criteria.
-# Your answer should either start with 'inclusion criterion - ' or 'exclusion criterion - '.
-# Please only write your answer. Here is the list of criteria:
-#             """
-#             cluster_criteria_txt = '\n'.join(cluster_criteria)
-#             prompt = question + cluster_criteria_txt
-#             response = openai.Completion.create(
-#                 engine='gpt-3.5-turbo',
-#                 prompt='hello, are you there? Im testing from an api.',  # prompt,
-#                 max_tokens=60
-#             )
-#             ...
+        # Define system context and basic prompt
+        system_prompt = '\n'.join([
+            'You are an expert in the fields of clinical trials and eligibility criteria.',
+            'You express yourself succintly, i.e., less than 250 characters per response.',
+        ])
+        base_user_prompt = '\n'.join([
+            'I have a list of eligility criteria. They all look alike.',
+            'I need you to generate one clear and short eligibility rule that best covers the list without focusing on the specific details of each criterion.',
+            'You should give more weight to the first elements of the list, as they are more likely to be representative.'
+            'Your answer should be *one* rule that starts with either "Inclusion criterion - " or "Exclusion criterion - ".',
+            'Please just write your answer. Here is the list of criteria (each one is on a new line):\n',
+        ])
+        
+        # Prompt the model and collect answer for each criterion
+        pooled_criterion_txts = []
+        prompt_loop = tqdm(criterion_txts, 'Prompting GPT to summarize clusters')
+        for cluster_criteria in prompt_loop:
+            user_prompt = base_user_prompt + '\n'.join(cluster_criteria)
+            response = prompt_chatgpt(system_prompt, user_prompt)
+            post_processed = 'criterion - '.join(
+                [s.capitalize() for s in response.split('criterion - ')]
+            )
+            pooled_criterion_txts.append(post_processed)
     
     # Handle wrong method name and return the results
     else:
         raise ValueError('Wrong pooling method selected.')
     return pooled_criterion_txts
+
+
+def prompt_chatgpt(system_prompt, user_prompt, max_retries=5):
+    """ Collect answer of chat-gpt, given system and user prompts, and avoiding
+        rate limit by waiting an exponentially increasing amount of time
+    """
+    for i in range(max_retries):  # hard limit
+        try:
+            response = openai.ChatCompletion.create(
+                model='gpt-3.5-turbo',
+                messages=[
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_prompt},
+                ]
+            )
+            return response['choices'][0]['message']['content'].strip()
+        except RateLimitError:
+            time.sleep(2 ** i)
+    return 'No response, open-ai reached rate limit.'
 
 
 def plot_cluster_hierarchy(token_info: dict,
@@ -360,7 +383,7 @@ def compute_reduced_repr(embeddings: np.ndarray,
             'n_components': dim,
             'perplexity': perplexity,  # 10.0, 30.0, 100.0, perplexity
             'learning_rate': 'auto',  # or any value in [10 -> 1000] may be good
-            'n_iter': 20000,  # 10000, 2000
+            'n_iter': 10000,  # 10000, 2000
             'n_iter_without_progress': 1000,  # 200, 1000
             'metric': 'cosine',
             'square_distances': True,  # future default behaviour
@@ -370,19 +393,4 @@ def compute_reduced_repr(embeddings: np.ndarray,
             'method': 'barnes_hut' if dim < 4 else 'exact',  # 'exact' very slow
         }
         return TSNE(**params).fit_transform(embeddings)
-
-
-# def filter_data(phases, conds, chosen_phases,
-#                 chosen_conds, chose_cond_ids, chose_itrv_ids):
-#     """ Filter out CTs that do not belong to a given phase and condition
-#     """
-#     if chosen_phases == None:
-#         phase_ids = [1 for _ in range(len(phases))]
-#     else:
-#         phase_ids = [any([p in pp for p in chosen_phases]) for pp in phases]
-#     if chosen_conds == None:
-#         cond_ids = [1 for _ in range(len(conds))]
-#     else:
-#         cond_ids = [any([c in cc for c in chosen_conds]) for cc in conds]
-#     combined = [p and c for p, c in zip(phase_ids, cond_ids)]
-#     return combined
+    
