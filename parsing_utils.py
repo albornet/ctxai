@@ -6,6 +6,7 @@ import nltk
 nltk.download('punkt')
 from difflib import SequenceMatcher
 from nltk.tokenize import sent_tokenize
+# from clinitokenizer.tokenize import clini_tokenize
 from torchdata.datapipes import functional_datapipe
 from torchdata.datapipes.iter import IterDataPipe
 
@@ -298,10 +299,12 @@ class CriteriaParser(IterDataPipe):
                     continue
                 
                 # Append non-matching criterion, with previous (sub)context match
-                contextualized.append({'category': criterion['category'],
-                                        'context': context,
-                                        'subcontext': subcontext,
-                                        'text': split.strip('\n\t :')})
+                contextualized.append({
+                    'category': criterion['category'],
+                    'context': context,
+                    'subcontext': subcontext,
+                    'text': split.strip('\n\t :'),
+                })
             
             # # Small check in case previous category was different (ok?)
             # if category != prev_category:
@@ -400,7 +403,7 @@ class CustomXLSXLineReader(IterDataPipe):
     
     @staticmethod
     def extract_criteria_strs(sheet_df: pd.DataFrame) -> list[str]:
-        """ Lalalalal
+        """ Extract criteria text from the dataframe
         """
         in_crit_strs = sheet_df['inclusionCriteriaNorm'].fillna('')
         ex_crit_strs = sheet_df['exclusionCriteriaNorm'].fillna('')
@@ -408,7 +411,7 @@ class CustomXLSXLineReader(IterDataPipe):
         return crit_strs
     
     def extract_metadata_dicts(self, sheet_df: pd.DataFrame) -> list[dict]:
-        """ Lalalalal
+        """ Extract metadata information for each criteria text
         """
         sheet_df['conditions_'] = sheet_df['conditions']
         sheet_df = sheet_df[list(self.metadata_mapping.keys())]
@@ -439,3 +442,65 @@ class CustomXLSXLineReader(IterDataPipe):
                 except KeyError:
                     pass
         return tree_nums
+    
+
+@functional_datapipe('read_dict_lines')
+class CustomDictLineReader(IterDataPipe):
+    def __init__(self, dp):
+        """ Lalalala
+        """
+        self.dp = dp
+        self.metadata_mappings = {
+            'trialid': 'ct_path',
+            'cluster': 'label',
+            'sentence_preprocessed': 'condition_ids',
+        }
+    
+    def __iter__(self):
+        for file_name in self.dp:
+            sheet_df = pd.ExcelFile(file_name).parse('Sheet1')
+            crit_str_list = self.extract_criteria_strs(sheet_df)
+            metatdata_dict_list = self.extract_metadata_dicts(sheet_df)
+            for crit_str, metadata in zip(crit_str_list, metatdata_dict_list):
+                yield metadata, crit_str
+    
+    def extract_criteria_strs(self, sheet_df: pd.DataFrame) -> list[str]:
+        """ Extract eligibility criteria from the dataframe
+        """
+        sheet_df = sheet_df['sentence']
+        sheet_df = sheet_df.apply(self.strip_fn)
+        sheet_df = sheet_df.apply(self.criterion_format_fn)
+        return sheet_df  # .to_list()
+    
+    @staticmethod
+    def strip_fn(s: str):
+        """ Remove trailing spaces for a criteria
+        """
+        return s.strip()
+    
+    @staticmethod
+    def criterion_format_fn(criteria_str: pd.DataFrame) -> pd.DataFrame:
+        criteria_dict = {
+            'category': '',
+            'context': '',
+            'subcontext': '',
+            'text': criteria_str
+        }
+        return [criteria_dict]
+    
+    def extract_metadata_dicts(self, sheet_df: pd.DataFrame) -> list[dict]:
+        """ Extract metadata information for each criterion
+        """
+        sheet_df = sheet_df.filter(self.metadata_mappings.keys())
+        sheet_df = sheet_df.rename(self.metadata_mappings, axis=1)
+        sheet_df['criteria_str'] = sheet_df.apply(lambda _: '', axis=1)
+        sheet_df['complexity'] = sheet_df.apply(lambda _: '', axis=1)
+        sheet_df['phases'] = sheet_df.apply(lambda _: [''], axis=1)
+        sheet_df['conditions'] = sheet_df.apply(lambda _: [''], axis=1)
+        sheet_df['intervention_ids'] = sheet_df.apply(lambda _: [''], axis=1)
+        sheet_df['condition_ids'] = sheet_df['condition_ids'].apply(
+            lambda s: [s.strip()],
+        )
+        list_of_metadata = sheet_df.to_dict('records')
+        return list_of_metadata
+    

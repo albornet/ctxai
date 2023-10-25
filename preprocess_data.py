@@ -9,16 +9,17 @@ from parsing_utils import (
     CriteriaParser,
     CriteriaCSVWriter,
     CustomXLSXLineReader,
+    CustomDictLineReader,
 )
 from statistics import mean, stdev, median, mode
 from tqdm import tqdm
 from typing import Union
 
 
-INPUT_FORMAT = 'xlsx'  # 'json', 'xlsx'
+INPUT_FORMAT = 'dict'  # 'json', 'xlsx', 'dict'
 LOAD_CSV_RESULTS = False
 EXAMPLE = False
-DATA_DIR = os.path.join('data', 'raw_files')
+DATA_DIR = os.path.join('data', 'raw_files', INPUT_FORMAT)
 RESULT_DIR = os.path.join('data', 'preprocessed', INPUT_FORMAT)
 PLOT_PATH = os.path.join(RESULT_DIR, 'criteria_length_histogram.png')
 CSV_PATH = os.path.join(RESULT_DIR, 'parsed_criteria.csv')
@@ -29,8 +30,9 @@ CSV_HEADERS = [
 ]
 ENCODING = 'utf-8'
 NUM_STEPS = 110000
-NUM_WORKERS = 12
+NUM_WORKERS = 0  # 12
 NUM_WORKERS = min(NUM_WORKERS, max(os.cpu_count() - 4, os.cpu_count() // 4))
+PREFETCH_FACTOR = None if NUM_WORKERS == 0 else 2
 if EXAMPLE:
     NUM_STEPS = NUM_WORKERS
     PLOT_PATH = os.path.join(RESULT_DIR, 'criteria_length_histogram_example.png')
@@ -49,7 +51,10 @@ def main():
             
         # Initialize data processors
         ds = get_dataset(DATA_DIR, INPUT_FORMAT, shuffle=True)
-        rs = MultiProcessingReadingService(num_workers=NUM_WORKERS)
+        rs = MultiProcessingReadingService(
+            num_workers=NUM_WORKERS,
+            prefetch_factor=PREFETCH_FACTOR,
+        )
         dl = DataLoader2(ds, reading_service=rs)
         
         # Write parsed criteria to the output file
@@ -72,22 +77,28 @@ def get_dataset(data_dir, input_format, shuffle=False):
         processing functions, with sharding implemented at the file level
     """
     # Load correct files
-    files = dpi.FileLister(data_dir, recursive=True, masks='*.%s' % input_format)
+    masks = '*.%s' % ('xlsx' if input_format == 'dict' else input_format)
+    files = dpi.FileLister(data_dir, recursive=True, masks=masks)
     sharded = dpi.ShardingFilter(files)  # split file processing by shards
     if shuffle: sharded = dpi.Shuffler(sharded)
     
     # Load data inside each file
-    if input_format == 'json': 
+    if input_format == 'json':
         jsons = dpi.FileOpener(sharded, encoding=ENCODING)
         dicts = dpi.JsonParser(jsons)
         raw_samples = ClinicalTrialFilter(dicts)
     elif input_format == 'xlsx':
         raw_samples = CustomXLSXLineReader(sharded)
+    elif input_format == 'dict':
+        raw_samples = CustomDictLineReader(sharded)
     else:
         raise ValueError('Wrong input format selected.')
         
-    # Parse criteria
-    parsed_samples = CriteriaParser(raw_samples)
+    # Parse criteria (if not done already)
+    if input_format == 'dict':
+        parsed_samples = raw_samples  # already parsed in the raw file
+    else:
+        parsed_samples = CriteriaParser(raw_samples)
     written = CriteriaCSVWriter(parsed_samples)
     return written
 
