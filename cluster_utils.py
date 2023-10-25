@@ -214,7 +214,7 @@ def clusterize(data: np.ndarray, mode=str, params=dict) -> dict:
     cluster_params = select_cluster_params(len(data), mode, params)
     
     # Find cluster affordances based on cluster hierarchy
-    clusterer = hdbscan.HDBSCAN(**cluster_params)
+    clusterer = hdbscan.HDBSCAN(**cluster_params, core_dist_n_jobs=N_CPUS)
     clusterer.fit(data)
     n_clusters = clusterer.labels_.max() + 1  # -1 being ignored
     if n_clusters <= 1: return None
