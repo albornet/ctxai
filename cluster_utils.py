@@ -35,7 +35,8 @@ CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
 DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster 
 N_ITER_MAX_TSNE = 10_000  # 1_000, 2_000, 10_000
-N_CPUS = min(10, os.cpu_count() // 2)  # for t-sne
+# N_CPUS = min(10, os.cpu_count() // 2)  # for t-sne
+N_CPUS = 20
 FIG_SIZE = (15, 5)
 TEXT_SIZE = 16
 COLORS = np.array((
@@ -606,7 +607,6 @@ def compute_reduced_repr(embeddings: np.ndarray,
             "n_iter": N_ITER_MAX_TSNE,  # 10000, 2000
             "n_iter_without_progress": 1000,  # 200, 1000
             "metric": "cosine",
-            "square_distances": True,  # future default behaviour
             "init": "random",  # "pca", "random"
             "n_jobs": N_CPUS,
             "verbose": 2,

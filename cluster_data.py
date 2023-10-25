@@ -58,11 +58,11 @@ CHOSEN_ITRV_LVL = 3
 
 ENCODING = "utf-8"
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-NUM_WORKERS = 0  # 0 for no multiprocessing
-NUM_WORKERS = min(NUM_WORKERS, os.cpu_count() // 2)
+NUM_WORKERS = 1  # 0 for no multiprocessing
+# NUM_WORKERS = min(NUM_WORKERS, os.cpu_count() // 2)
 PREFETCH_FACTOR = None if NUM_WORKERS == 0 else 1  # more?
 BATCH_SIZE = 64
-MAX_SELECTED_SAMPLES = 1_000_000
+MAX_SELECTED_SAMPLES = 1_000_000  # 1_000_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 
 # STATUS_MAP = {
@@ -96,19 +96,15 @@ def run_one_model(model_type):
     if not LOAD_DATA:
         model, tokenizer, pooling_fn = get_model_pipeline(model_type)
         ds = get_dataset(INPUT_DIR, tokenizer)
-        rs = MultiProcessingReadingService(
-            num_workers=NUM_WORKERS,
-            prefetch_factor=PREFETCH_FACTOR,
-        )
+        rs = MultiProcessingReadingService(num_workers=NUM_WORKERS)
         dl = DataLoader2(ds, reading_service=rs)
     
     # Populate tensor with eligibility criteria embeddings
     if not LOAD_DATA:
         raw_txts, metadatas = [], []
         embeddings = torch.empty((0, model.config.hidden_size))
-        # data_loop = tqdm(enumerate(dl), total=NUM_STEPS, leave=False)
-        # for i, (encoded, raw_txt, metadata) in data_loop:
-        for i, (encoded, raw_txt, metadata) in enumerate(dl):
+        data_loop = tqdm(enumerate(dl), total=NUM_STEPS, leave=False)
+        for i, (encoded, raw_txt, metadata) in data_loop:
             # Compute embeddings for this batch
             encoded = {k: v.to(DEVICE) for k, v in encoded.items()}
             with torch.no_grad():
