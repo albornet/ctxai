@@ -3,11 +3,15 @@ import ast
 import csv
 import json
 import pickle
+import glob
+import shutil
 import numpy as np
+import pandas as pd
 import torch
 import torchdata.datapipes.iter as dpi
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from torchdata.datapipes import functional_datapipe
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
 from transformers import AutoModel, AutoTokenizer
 from collections import Counter
@@ -24,15 +28,15 @@ MODEL_STR_MAP = {
     # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
 }
 
-INPUT_FORMAT = "json"  # "json", "xlsx", "dict"
+RAW_INPUT_FORMAT = "json"  # "json", "xlsx", "dict"
 CSV_FILE_MASK = "*criteria.csv"  # "*criteria.csv", "*example.csv"
 LOAD_DATA = False
 LOAD_RESULTS = False
 
 DATA_DIR = "data"
-INPUT_DIR = os.path.join(DATA_DIR, "preprocessed", INPUT_FORMAT)
-OUTPUT_DIR = os.path.join(DATA_DIR, "postprocessed", INPUT_FORMAT)
-RESULT_DIR = os.path.join("results", INPUT_FORMAT)
+INPUT_DIR = os.path.join(DATA_DIR, "preprocessed", RAW_INPUT_FORMAT)
+OUTPUT_DIR = os.path.join(DATA_DIR, "postprocessed", RAW_INPUT_FORMAT)
+RESULT_DIR = os.path.join("results", RAW_INPUT_FORMAT)
 STAT_REPORT_OUTPUT_PATH = os.path.join(RESULT_DIR, "cluster_report_stat.csv")
 TEXT_REPORT_OUTPUT_PATH = os.path.join(RESULT_DIR, "cluster_report_text.csv")
 with open(os.path.join(DATA_DIR, "mesh_crosswalk_inverted.json"), "r") as f:
@@ -46,23 +50,13 @@ CHOSEN_ITRV_IDS = []  # ["D02"]  # [] to ignore this selection filter
 CHOSEN_COND_LVL = 4
 CHOSEN_ITRV_LVL = 3
 
-# import argparse
-# parser = argparse.ArgumentParser(description="Description of your program")
-# parser.add_argument("-c","--chosen_cond_lvl", required=True, type=int)
-# parser.add_argument("-i","--chosen_itrv_lvl", required=True, type=int)
-# args = parser.parse_args()
-# CHOSEN_COND_LVL = args.chosen_cond_lvl  # 4
-# CHOSEN_ITRV_LVL = args.chosen_itrv_lvl  # 1
-# print("\n#############################################")
-# print("#############################################\n")
-
 ENCODING = "utf-8"
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-NUM_WORKERS = 1  # 0 for no multiprocessing
+NUM_WORKERS = 20  # 0 for no multiprocessing
 # NUM_WORKERS = min(NUM_WORKERS, os.cpu_count() // 2)
 PREFETCH_FACTOR = None if NUM_WORKERS == 0 else 1  # more?
 BATCH_SIZE = 64
-MAX_SELECTED_SAMPLES = 1_000_000  # 1_000_000
+MAX_SELECTED_SAMPLES = 100_000  # 1_000_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 
 # STATUS_MAP = {
@@ -79,23 +73,24 @@ STATUS_MAP = None  # to use raw labels
 
 
 def main():
+    input_dir = split_csv_for_multiprocessing(INPUT_DIR, NUM_WORKERS)
     if LOAD_RESULTS:
         with open(os.path.join(RESULT_DIR, "model_comparison.pkl"), "rb") as f:
             cluster_metrics = pickle.load(f)
     else:
         cluster_metrics = {}
         for model_type in MODEL_STR_MAP.keys():
-            cluster_metrics[model_type] = run_one_model(model_type)        
+            cluster_metrics[model_type] = run_one_model(model_type, input_dir)        
     plot_model_comparison(cluster_metrics)
 
 
-def run_one_model(model_type):
+def run_one_model(model_type, input_dir):
     """ Cluster eligibility criteria using embeddings from one language model
     """
     # Initialize language model and data pipeline
     if not LOAD_DATA:
         model, tokenizer, pooling_fn = get_model_pipeline(model_type)
-        ds = get_dataset(INPUT_DIR, tokenizer)
+        ds = get_dataset(input_dir, tokenizer)
         rs = MultiProcessingReadingService(num_workers=NUM_WORKERS)
         dl = DataLoader2(ds, reading_service=rs)
     
@@ -169,14 +164,14 @@ def get_dataset(data_dir, tokenizer):
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
-    files = dpi.FileLister(data_dir, recursive=True, masks=CSV_FILE_MASK)
-    sharded = dpi.ShardingFilter(files)  # split file processing by shards
-    jsons = dpi.FileOpener(sharded, encoding=ENCODING)
-    rows = dpi.CSVParser(jsons)
-    data_labels = ClinicalTrialFilter(rows)
-    batches = dpi.Batcher(data_labels, batch_size=BATCH_SIZE)
-    tokenized_batches = Tokenizer(batches, tokenizer)
-    return tokenized_batches
+    dataset = dpi.FileLister(data_dir, recursive=True, masks=CSV_FILE_MASK)\
+        .open_files(mode="t")\
+        .sharding_filter()\
+        .parse_csv()\
+        .filter_clinical_trial()\
+        .batch(batch_size=BATCH_SIZE)\
+        .tokenize(tokenizer=tokenizer)
+    return dataset
 
 
 def save_data(dir_, model_type, embeddings, raw_txts, labels):
@@ -201,6 +196,7 @@ def load_data(dir_, model_type):
     return embeddings, raw_txts, labels
 
 
+@functional_datapipe("filter_clinical_trial")
 class ClinicalTrialFilter(dpi.IterDataPipe):
     def __init__(self, dp: dpi.IterDataPipe) -> None:
         """ Custom data pipeline to extract input text and label from CT csv file
@@ -324,7 +320,8 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         to_join = (s for s in term_sequence if len(s) > 0)
         return " - ".join(to_join).lower()
     
-    
+
+@functional_datapipe("tokenize")
 class Tokenizer(dpi.IterDataPipe):
     def __init__(self, dp: dpi.IterDataPipe, tokenizer):
         """ Custom data pipeline to tokenize an batch of input strings, keeping
@@ -459,8 +456,37 @@ def print_data_summary(metadatas: list[dict[str, str]]) -> None:
     print("\t- N CTs above threshold: %s" % sum(cts_per_label))
     print("\t- Average CTs per label: %s" % np.mean(cts_per_label))
     print("\t- Median CTs per label: %s" % np.median(cts_per_label))
-    
 
+
+def split_csv_for_multiprocessing(input_dir, num_workers):
+    """ Split one big csv file into N different smaller files to be processed
+        by multiple processes
+    """
+    # Check split file directory and number of workers 
+    csv_files = glob.glob(os.path.join(input_dir, '*.csv'))
+    output_dir = os.path.join(input_dir, 'mp')
+    if len(csv_files) != 1: raise RuntimeError("Too many csv files")
+    if os.path.exists(output_dir): shutil.rmtree(output_dir)
+    if num_workers <= 1: return input_dir  # original directory
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Split the big file into smaller pieces
+    print("Loading csv file for multiprocessing split")
+    csv_path = csv_files[0]
+    csv_name = os.path.split(csv_path)[-1]
+    df = pd.read_csv(csv_path)
+    batch_size = len(df) // num_workers
+    for i in tqdm(range(num_workers), desc="Splitting csv for multiprocessing"):
+        start_index = i * batch_size
+        end_index = start_index + batch_size if i < num_workers - 1 else None
+        batch_df = df[start_index:end_index]
+        output_path = os.path.join(output_dir, '%03i_%s' % (i + 1, csv_name))
+        batch_df.to_csv(output_path, index=False)
+    
+    # Return updated directory
+    return output_dir
+            
+        
 if __name__ == "__main__":
     main()
     
