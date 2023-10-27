@@ -25,7 +25,7 @@ args = parser.parse_args()
 NUM_WORKERS = 40 if args.hpc else 12  # 1
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
-MAX_SELECTED_SAMPLES = 1_000  # 1_000_000
+MAX_SELECTED_SAMPLES = 1_000_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 
 MODEL_STR_MAP = {
