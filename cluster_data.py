@@ -10,6 +10,7 @@ import pandas as pd
 import torch
 import torchdata.datapipes.iter as dpi
 import matplotlib.pyplot as plt
+import argparse
 from tqdm import tqdm
 from torchdata.datapipes import functional_datapipe
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
@@ -17,6 +18,15 @@ from transformers import AutoModel, AutoTokenizer
 from collections import Counter
 from cluster_utils import report_clusters
 
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
+args = parser.parse_args()
+NUM_WORKERS = 40 if args.hpc else 12  # 1
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+BATCH_SIZE = 64
+MAX_SELECTED_SAMPLES = 1_000  # 1_000_000
+NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 
 MODEL_STR_MAP = {
     # "bert": "bert-large-uncased",
@@ -27,12 +37,22 @@ MODEL_STR_MAP = {
     # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
     # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
 }
+# STATUS_MAP = {
+#     "completed": "good",
+#     "suspended": "bad",
+#     "withdrawn": "bad",
+#     "terminated": "bad",
+#     "unknown status": "bad",
+#     "recruiting": "bad",
+#     "not yet recruiting": "bad",
+#     "active, not recruiting": "bad",
+# }
+STATUS_MAP = None  # to use raw labels
 
 RAW_INPUT_FORMAT = "json"  # "json", "xlsx", "dict"
 CSV_FILE_MASK = "*criteria.csv"  # "*criteria.csv", "*example.csv"
 LOAD_DATA = False
 LOAD_RESULTS = False
-
 DATA_DIR = "data"
 INPUT_DIR = os.path.join(DATA_DIR, "preprocessed", RAW_INPUT_FORMAT)
 OUTPUT_DIR = os.path.join(DATA_DIR, "postprocessed", RAW_INPUT_FORMAT)
@@ -50,30 +70,9 @@ CHOSEN_ITRV_IDS = []  # ["D02"]  # [] to ignore this selection filter
 CHOSEN_COND_LVL = 4
 CHOSEN_ITRV_LVL = 3
 
-ENCODING = "utf-8"
-DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-NUM_WORKERS = 20  # 0 for no multiprocessing
-# NUM_WORKERS = min(NUM_WORKERS, os.cpu_count() // 2)
-PREFETCH_FACTOR = None if NUM_WORKERS == 0 else 1  # more?
-BATCH_SIZE = 64
-MAX_SELECTED_SAMPLES = 100_000  # 1_000_000
-NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
-
-# STATUS_MAP = {
-#     "completed": "good",
-#     "suspended": "bad",
-#     "withdrawn": "bad",
-#     "terminated": "bad",
-#     "unknown status": "bad",
-#     "recruiting": "bad",
-#     "not yet recruiting": "bad",
-#     "active, not recruiting": "bad",
-# }
-STATUS_MAP = None  # to use raw labels
-
 
 def main():
-    input_dir = split_csv_for_multiprocessing(INPUT_DIR, NUM_WORKERS)
+    input_dir = INPUT_DIR  # split_csv_for_multiprocessing(INPUT_DIR, NUM_WORKERS)
     if LOAD_RESULTS:
         with open(os.path.join(RESULT_DIR, "model_comparison.pkl"), "rb") as f:
             cluster_metrics = pickle.load(f)
@@ -84,7 +83,7 @@ def main():
     plot_model_comparison(cluster_metrics)
 
 
-def run_one_model(model_type, input_dir):
+def run_one_model(model_type: str, input_dir: str) -> dict:
     """ Cluster eligibility criteria using embeddings from one language model
     """
     # Initialize language model and data pipeline
@@ -124,7 +123,8 @@ def run_one_model(model_type, input_dir):
         if ".csv" in f:
             os.remove(os.path.join(RESULT_DIR, f))
     text_report, stat_report, cluster_metrics =\
-        report_clusters(RESULT_DIR, OUTPUT_DIR, model_type, embeddings, raw_txts, metadatas)
+        report_clusters(RESULT_DIR, OUTPUT_DIR, NUM_WORKERS,
+                        model_type, embeddings, raw_txts, metadatas)
     
     # Generate csv report from raw text results
     with open(STAT_REPORT_OUTPUT_PATH, "w", newline="") as file:
@@ -166,8 +166,8 @@ def get_dataset(data_dir, tokenizer):
     """
     dataset = dpi.FileLister(data_dir, recursive=True, masks=CSV_FILE_MASK)\
         .open_files(mode="t")\
-        .sharding_filter()\
         .parse_csv()\
+        .sharding_filter()\
         .filter_clinical_trial()\
         .batch(batch_size=BATCH_SIZE)\
         .tokenize(tokenizer=tokenizer)
