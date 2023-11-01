@@ -565,37 +565,35 @@ def plot_cluster_hierarchy(token_info: dict,
     ax1.set_title("Data and %s empirical clusters" % n_clusters, fontsize=TEXT_SIZE)
     
     # Visualize empirical clusters (but only the samples with an assigned cluster)
-    cluster_only_indices = np.where(plot_data > -1)
-    ax1 = fig.add_subplot(2, 2, 2, **plot_kwargs)
-    ax1.scatter(
-        *plot_data[cluster_only_indices].T,
-        c=[cluster_colors[i] for i in cluster_only_indices[0]],
-        **SCATTER_PARAMS
-    )
-    ax1.set_xticklabels([]); ax1.set_yticklabels([])
-    ax1.set_xticks([]); ax1.set_yticks([])
-    ax1.set_title("Data and %s empirical clusters" % n_clusters, fontsize=TEXT_SIZE)
+    cluster_only_indices = np.where(cluster_labels > -1)[0]
+    clustered_data = plot_data[cluster_only_indices]
+    clustered_colors = [cluster_colors[i] for i in cluster_only_indices]    
+    ax2 = fig.add_subplot(2, 2, 2, **plot_kwargs)
+    ax2.scatter(*clustered_data.T, c=clustered_colors, **SCATTER_PARAMS)
+    ax2.set_xticklabels([]); ax2.set_yticklabels([])
+    ax2.set_xticks([]); ax2.set_yticks([])
+    ax2.set_title("Data and %s empirical clusters" % n_clusters, fontsize=TEXT_SIZE)
     
     # Visualize theoretical clusters (using, e.g., ICD10-CM code hierarchy)
-    ax0 = fig.add_subplot(2, 2, 3, **plot_kwargs)
-    ax0.scatter(*plot_data.T, c=class_colors, **SCATTER_PARAMS)
-    ax0.set_xticklabels([]); ax0.set_yticklabels([])
-    ax0.set_xticks([]); ax0.set_yticks([])
-    ax0.set_title("Data and %s labels" % n_labels, fontsize=TEXT_SIZE)
+    ax3 = fig.add_subplot(2, 2, 3, **plot_kwargs)
+    ax3.scatter(*plot_data.T, c=class_colors, **SCATTER_PARAMS)
+    ax3.set_xticklabels([]); ax3.set_yticklabels([])
+    ax3.set_xticks([]); ax3.set_yticks([])
+    ax3.set_title("Data and %s labels" % n_labels, fontsize=TEXT_SIZE)
     
     # Visualize empirical cluster tree
     if hasattr(cluster_info["clusterer"], "condensed_tree_"):
-        ax2 = fig.add_subplot(2, 2, 4)
+        ax4 = fig.add_subplot(2, 2, 4)
         cluster_info["clusterer"].condensed_tree_.plot(
-            axis=ax2, leaf_separation=LEAF_SEPARATION, colorbar=True)
-        ax2.set_title("Empirical cluster tree", fontsize=TEXT_SIZE)
-        ax2.get_yaxis().set_tick_params(left=False)
-        ax2.get_yaxis().set_tick_params(right=False)
-        ax2.set_ylabel("", fontsize=TEXT_SIZE)
-        ax2.set_yticks([])
-        ax2.spines["top"].set_visible(True)
-        ax2.spines["right"].set_visible(True)
-        ax2.spines["bottom"].set_visible(True)
+            axis=ax4, leaf_separation=LEAF_SEPARATION, colorbar=True)
+        ax4.set_title("Empirical cluster tree", fontsize=TEXT_SIZE)
+        ax4.get_yaxis().set_tick_params(left=False)
+        ax4.get_yaxis().set_tick_params(right=False)
+        ax4.set_ylabel("", fontsize=TEXT_SIZE)
+        ax4.set_yticks([])
+        ax4.spines["top"].set_visible(True)
+        ax4.spines["right"].set_visible(True)
+        ax4.spines["bottom"].set_visible(True)
     
     # Save figure
     plt.suptitle(sup_title_1 + "\n" + sup_title_2, fontsize=TEXT_SIZE)
