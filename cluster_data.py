@@ -51,7 +51,7 @@ STATUS_MAP = None  # to use raw labels
 
 RAW_INPUT_FORMAT = "json"  # "json", "xlsx", "dict"
 CSV_FILE_MASK = "*criteria.csv"  # "*criteria.csv", "*example.csv"
-LOAD_DATA = False
+LOAD_DATA = True
 LOAD_RESULTS = False
 DATA_DIR = "data"
 INPUT_DIR = os.path.join(DATA_DIR, "preprocessed", RAW_INPUT_FORMAT)
@@ -90,7 +90,7 @@ def run_one_model(model_type: str, input_dir: str) -> dict:
     if not LOAD_DATA:
         model, tokenizer, pooling_fn = get_model_pipeline(model_type)
         ds = get_dataset(input_dir, tokenizer)
-        rs = MultiProcessingReadingService(num_workers=NUM_WORKERS)
+        rs = MultiProcessingReadingService(num_workers=1)  # NUM_WORKERS)
         dl = DataLoader2(ds, reading_service=rs)
     
     # Populate tensor with eligibility criteria embeddings
@@ -164,14 +164,14 @@ def get_dataset(data_dir, tokenizer):
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
-    dataset = dpi.FileLister(data_dir, recursive=True, masks=CSV_FILE_MASK)\
+    ds = dpi.FileLister(data_dir, recursive=True, masks=CSV_FILE_MASK)\
         .open_files(mode="t")\
         .parse_csv()\
         .sharding_filter()\
         .filter_clinical_trial()\
         .batch(batch_size=BATCH_SIZE)\
         .tokenize(tokenizer=tokenizer)
-    return dataset
+    return ds
 
 
 def save_data(dir_, model_type, embeddings, raw_txts, labels):
@@ -485,7 +485,7 @@ def split_csv_for_multiprocessing(input_dir, num_workers):
     
     # Return updated directory
     return output_dir
-            
+
         
 if __name__ == "__main__":
     main()

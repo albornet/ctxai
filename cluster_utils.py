@@ -12,6 +12,7 @@ from collections import Counter, OrderedDict
 from itertools import zip_longest
 from tqdm import tqdm
 from openai.error import RateLimitError, ServiceUnavailableError
+from torchmetrics.clustering import DunnIndex
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from scipy.spatial.distance import cdist
@@ -19,7 +20,6 @@ from scipy.optimize import linear_sum_assignment
 from sklearn.metrics import (
     silhouette_score,
     davies_bouldin_score,
-    pairwise_distances,
     fowlkes_mallows_score,
     adjusted_rand_score,
     normalized_mutual_info_score,
@@ -27,14 +27,14 @@ from sklearn.metrics import (
 )
 
 
-LOAD_REDUCED_EMBEDDINGS = False
+LOAD_REDUCED_EMBEDDINGS = True
 CLUSTER_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
 DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster 
 N_ITER_MAX_TSNE = 10_000  # 1_000, 2_000, 10_000
-FIG_SIZE = (15, 5)
+FIG_SIZE = (11, 11)
 TEXT_SIZE = 16
 COLORS = np.array((
     list(plt.cm.tab20(np.arange(20)[0::2])) + \
@@ -46,7 +46,7 @@ NA_COLOR = np.array([0.0, 0.0, 0.0, NA_COLOR_ALPHA])
 COLORS[:, -1] = NOT_NA_COLOR_ALPHA
 SCATTER_PARAMS = {"s": 50, "linewidth": 0}
 LEAF_SEPARATION = 0.3
-DO_OPTUNA = True
+DO_OPTUNA = False
 N_OPTUNA_TRIALS = 100
 OPTUNA_PARAM_RANGES = {
     "max_cluster_size_primary": [0.02, 0.1],
@@ -59,14 +59,14 @@ OPTUNA_PARAM_RANGES = {
     "cluster_selection_method": ["eom"],
 }
 NO_OPTUNA_PARAMS = {
-    'max_cluster_size_primary': 0.09106468501283475,
-    'min_cluster_size_primary': 0.005578125954966229,
-    'min_samples_primary': 0.0005432416492546332,
-    'max_cluster_size_secondary': 0.973342816878498,
-    'min_cluster_size_secondary': 0.3393060186641388,
-    'min_samples_secondary': 0.0026654244626907594,
-    'alpha': 1.2958875080472532,
-    'cluster_selection_method': 'eom',
+    'max_cluster_size_primary': 0.046785350806582304,
+    'min_cluster_size_primary': 0.006506556037527307,
+    'min_samples_primary': 1.1262890212484896e-05,
+    'max_cluster_size_secondary': 0.8623302183161973,
+    'min_cluster_size_secondary': 0.18352927484472079,
+    'min_samples_secondary': 0.0038758800804370368,
+    'alpha': 2.8146278364855495,
+    'cluster_selection_method': 'eom'
 }
 
 
@@ -87,7 +87,7 @@ def report_clusters(result_dir: str,
     if LOAD_REDUCED_EMBEDDINGS:
         with open(load_path, "rb") as f:
             cluster_data = pickle.load(f)
-            plot_data = cluster_data  # pickle.load(f)        
+            plot_data = cluster_data  # pickle.load(f)
     else:
         cluster_data, plot_data = get_reduced_data(embeddings, metadata, num_workers)
         with open(load_path, "wb") as f:
@@ -101,11 +101,13 @@ def report_clusters(result_dir: str,
     
     # Cluster selected criteria, based on reduced embeddings
     print("Clustering %s eligibility criteria" % len(token_info["plot_data"]))
-    cluster_info = clusterize(data=cluster_data, mode="primary",
-                              params=params, num_workers=num_workers)
+    cluster_info = clusterize(
+        data=cluster_data, mode="primary", params=params, num_workers=num_workers
+    )
     if cluster_info is not None and DO_SUBCLUSTERIZE:
-        cluster_info = subclusterize(cluster_info,
-                                     params=params, num_workers=num_workers)
+        cluster_info = subclusterize(
+            cluster_info, params=params, num_workers=num_workers
+        )
         
     # Plot computed clusters and write reports about their content
     fig_path = os.path.join(result_dir, "cluster_plot_%s.png" % model_type)
@@ -158,15 +160,17 @@ def objective_fn(trial: optuna.Trial,
             
     # Perform clustering
     try:
-        cluster_info = clusterize(data=cluster_data, mode="primary",
-                                  params=params, num_workers=num_workers)
+        cluster_info = clusterize(
+            data=cluster_data, mode="primary", params=params, num_workers=num_workers,
+        )
         if cluster_info is not None and DO_SUBCLUSTERIZE:
-            cluster_info = subclusterize(cluster_info, params=params,
-                                         num_workers=num_workers)
+            cluster_info = subclusterize(
+                cluster_info, params=params, num_workers=num_workers,
+            )
     except:
         cluster_info = None
     
-    # Compute and return associated metric
+    # Compute metric
     if cluster_info is not None and cluster_info['n_clusters'] < 100:
         cluster_lbls = cluster_info["cluster_lbls"]
         metric_1 = silhouette_score(cluster_data, cluster_lbls)
@@ -174,6 +178,9 @@ def objective_fn(trial: optuna.Trial,
         metric = metric_1 + metric_2
     else:
         metric = float("-inf")
+    
+    # Make sure something is printed and return metric
+    print("Trial %s - metric %s - params %s" % (trial._trial_id, metric, params))
     return metric
 
 
@@ -437,7 +444,7 @@ def compute_proportions(lbl_list, unique_lbls):
     return result
 
 
-def pool_cluster_criteria(criterion_txts, method="closest"):
+def pool_cluster_criteria(criterion_txts, method="chatgpt"):
     """ For each cluster, summarize all belonging criteria to a single sentence
     """
     # Take the criterion closest to the cluster medoid
@@ -522,8 +529,10 @@ def plot_cluster_hierarchy(token_info: dict,
     plot_kwargs = {} if red_dim <= 2 else {"projection": "3d"}
     true_labels = token_info["true_lbls"]
     cluster_labels = cluster_info["cluster_lbls"]
-    n_labels = len(set(token_info["true_lbls"]))
+    n_labels = len(set(true_labels))
     n_clusters = cluster_labels.max() + 1
+    n_samples = len(true_labels)
+    print("Plotting %s criteria embeddings" % n_samples)
     
     # Retrieve relevant data
     cluster_colors, class_colors = get_cluster_colors(token_info, cluster_info)
@@ -536,9 +545,9 @@ def plot_cluster_hierarchy(token_info: dict,
     # Evaluate clustering quality (label-free)
     sil_score = silhouette_score(cluster_data, cluster_labels)
     db_score = davies_bouldin_score(cluster_data, cluster_labels)
-    di_index = dunn_index(cluster_data, cluster_labels)
-    sup_title_1 = "SIL: %.2f, DB: %.2f, SIL/DB: %.2f, DI: %.2f" %\
-        (sil_score, db_score, sil_score / db_score, di_index)
+    du_index = dunn_index(cluster_data, cluster_labels)
+    sup_title_1 = "N: %i, SIL: %.2f, DB: %.2f, Dunn: %.2f" %\
+        (n_samples, sil_score, db_score, du_index)
     
     # Evaluate clustering quality (label-dependent)
     ar_index = adjusted_rand_score(true_labels, cluster_labels)
@@ -548,23 +557,35 @@ def plot_cluster_hierarchy(token_info: dict,
     sup_title_2 = "ARI: %.2f, NMI: %.2f, FMI: %.2f, H: %.2f, C: %.2f, V: %.2f" %\
         (ar_index, nm_index, fm_index, homogeneity, completeness, v_index)
     
-    # Visualize theoretical clusters (using, e.g., ICD10-CM code hierarchy)
-    ax0 = fig.add_subplot(1, 3, 1, **plot_kwargs)
-    ax0.scatter(*plot_data.T, c=class_colors, **SCATTER_PARAMS)
-    ax0.set_xticklabels([]); ax0.set_yticklabels([])
-    ax0.set_xticks([]); ax0.set_yticks([])
-    ax0.set_title("Data and labels (N = %s)" % n_labels, fontsize=TEXT_SIZE)
-    
     # Visualize empirical clusters
-    ax1 = fig.add_subplot(1, 3, 2, **plot_kwargs)
+    ax1 = fig.add_subplot(2, 2, 1, **plot_kwargs)
     ax1.scatter(*plot_data.T, c=cluster_colors, **SCATTER_PARAMS)
     ax1.set_xticklabels([]); ax1.set_yticklabels([])
     ax1.set_xticks([]); ax1.set_yticks([])
-    ax1.set_title("Empirical clusters (M = %s)" % n_clusters, fontsize=TEXT_SIZE)
+    ax1.set_title("Data and %s empirical clusters" % n_clusters, fontsize=TEXT_SIZE)
+    
+    # Visualize empirical clusters (but only the samples with an assigned cluster)
+    cluster_only_indices = np.where(plot_data > -1)
+    ax1 = fig.add_subplot(2, 2, 2, **plot_kwargs)
+    ax1.scatter(
+        *plot_data[cluster_only_indices].T,
+        c=[cluster_colors[i] for i in cluster_only_indices[0]],
+        **SCATTER_PARAMS
+    )
+    ax1.set_xticklabels([]); ax1.set_yticklabels([])
+    ax1.set_xticks([]); ax1.set_yticks([])
+    ax1.set_title("Data and %s empirical clusters" % n_clusters, fontsize=TEXT_SIZE)
+    
+    # Visualize theoretical clusters (using, e.g., ICD10-CM code hierarchy)
+    ax0 = fig.add_subplot(2, 2, 3, **plot_kwargs)
+    ax0.scatter(*plot_data.T, c=class_colors, **SCATTER_PARAMS)
+    ax0.set_xticklabels([]); ax0.set_yticklabels([])
+    ax0.set_xticks([]); ax0.set_yticks([])
+    ax0.set_title("Data and %s labels" % n_labels, fontsize=TEXT_SIZE)
     
     # Visualize empirical cluster tree
     if hasattr(cluster_info["clusterer"], "condensed_tree_"):
-        ax2 = fig.add_subplot(1, 3, 3)
+        ax2 = fig.add_subplot(2, 2, 4)
         cluster_info["clusterer"].condensed_tree_.plot(
             axis=ax2, leaf_separation=LEAF_SEPARATION, colorbar=True)
         ax2.set_title("Empirical cluster tree", fontsize=TEXT_SIZE)
@@ -586,7 +607,7 @@ def plot_cluster_hierarchy(token_info: dict,
     return {
         "sil": sil_score,
         "db": db_score,
-        "di": di_index,
+        "du": du_index,
         "ar": ar_index,
         "nm": nm_index,
         "fm": fm_index,
@@ -629,31 +650,13 @@ def compute_reduced_repr(embeddings: np.ndarray,
         return TSNE(**params).fit_transform(embeddings)
 
 
-def dunn_index(X, lbls):
-    """ Compute Dunn index, which is a label-free evaluation of clusters
+def dunn_index(cluster_data: np.ndarray, cluster_lbls: np.ndarray) -> float:
+    """ Compute Dunn index using torch metrics
     """
-    # Calculate inter-cluster distances
-    dist_matrix = pairwise_distances(X)
-    unique_lbls = set(lbls) - {-1}
-    inter_cluster_dists = np.zeros((len(unique_lbls), len(unique_lbls)))
-    for i, lbl_i in enumerate(unique_lbls):
-        for j, lbl_j in enumerate(unique_lbls):
-            if i < j:
-                dists = dist_matrix[lbls == lbl_i][:, lbls == lbl_j]
-                inter_cluster_dists[i, j] = dists.min()
-    min_inter_cluster_dist = np.min(inter_cluster_dists[inter_cluster_dists > 0])
+    dunn = DunnIndex(p=2)
+    metric = dunn(torch.from_numpy(cluster_data), torch.from_numpy(cluster_lbls))
+    return metric.item()
     
-    # Calculate intra-cluster distances
-    intra_cluster_dists = []
-    for lbl in unique_lbls:
-        cluster_pts = X[lbls == lbl]
-        if len(cluster_pts) > 1:
-            intra_cluster_dists.append(np.max(pairwise_distances(cluster_pts)))
-    max_intra_cluster_dist = max(intra_cluster_dists)
-    
-    # Return ratio
-    return min_inter_cluster_dist / max_intra_cluster_dist
-
 
 def get_cluster_colors(token_info, cluster_info):
     """ ...
