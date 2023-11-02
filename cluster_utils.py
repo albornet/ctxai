@@ -11,7 +11,14 @@ from optuna.samplers import TPESampler
 from collections import Counter, OrderedDict
 from itertools import zip_longest
 from tqdm import tqdm
-from openai.error import RateLimitError, ServiceUnavailableError
+from requests.exceptions import ConnectionError
+from openai.error import (
+    RateLimitError,
+    ServiceUnavailableError,
+    Timeout,
+    APIError,
+    APIConnectionError,
+)
 from torchmetrics.clustering import DunnIndex
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
@@ -509,10 +516,14 @@ def prompt_chatgpt(system_prompt, user_prompt, max_retries=5):
                 ]
             )
             return response["choices"][0]["message"]["content"].strip()
-        except (RateLimitError, ServiceUnavailableError):
-            print("Increasing wait time (%s)" % i)
+
+        except (RateLimitError, ServiceUnavailableError, Timeout,
+                ConnectionError, APIError, APIConnectionError) as e:
+            print("An error occurred: %s. Retrying in %i seconds." % (e, 2 ** i))
             time.sleep(2 ** i)
-    return "No response, open-ai reached rate limit."
+            
+    return "No response, open-ai reached rate limit or other network issue occurred."
+
 
 
 def plot_cluster_hierarchy(token_info: dict,
@@ -572,7 +583,8 @@ def plot_cluster_hierarchy(token_info: dict,
     ax2.scatter(*clustered_data.T, c=clustered_colors, **SCATTER_PARAMS)
     ax2.set_xticklabels([]); ax2.set_yticklabels([])
     ax2.set_xticks([]); ax2.set_yticks([])
-    ax2.set_title("Data and %s empirical clusters" % n_clusters, fontsize=TEXT_SIZE)
+    ax2.set_title("Data and %s empirical clusters (without unassigned samples)"\
+        % (n_clusters), fontsize=TEXT_SIZE)
     
     # Visualize theoretical clusters (using, e.g., ICD10-CM code hierarchy)
     ax3 = fig.add_subplot(2, 2, 3, **plot_kwargs)
