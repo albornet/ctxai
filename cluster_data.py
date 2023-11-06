@@ -10,7 +10,7 @@ import pandas as pd
 import torch
 import torchdata.datapipes.iter as dpi
 import matplotlib.pyplot as plt
-import argparse
+import cluster_config as cfg
 from tqdm import tqdm
 from torchdata.datapipes import functional_datapipe
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
@@ -19,88 +19,38 @@ from collections import Counter
 from cluster_utils import report_clusters
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
-args = parser.parse_args()
-NUM_WORKERS = 40 if args.hpc else 12  # 1
-DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-BATCH_SIZE = 64
-MAX_SELECTED_SAMPLES = 1_000_000
-NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
-
-MODEL_STR_MAP = {
-    # "bert": "bert-large-uncased",
-    # "roberta": "roberta-large",
-    # "bert-sentence": "efederici/sentence-bert-base",
-    # "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-    "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
-    # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
-    # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
-}
-# STATUS_MAP = {
-#     "completed": "good",
-#     "suspended": "bad",
-#     "withdrawn": "bad",
-#     "terminated": "bad",
-#     "unknown status": "bad",
-#     "recruiting": "bad",
-#     "not yet recruiting": "bad",
-#     "active, not recruiting": "bad",
-# }
-STATUS_MAP = None  # to use raw labels
-
-RAW_INPUT_FORMAT = "json"  # "json", "xlsx", "dict"
-CSV_FILE_MASK = "*criteria.csv"  # "*criteria.csv", "*example.csv"
-LOAD_DATA = True
-LOAD_RESULTS = False
-DATA_DIR = "data"
-INPUT_DIR = os.path.join(DATA_DIR, "preprocessed", RAW_INPUT_FORMAT)
-OUTPUT_DIR = os.path.join(DATA_DIR, "postprocessed", RAW_INPUT_FORMAT)
-RESULT_DIR = os.path.join("results", RAW_INPUT_FORMAT)
-STAT_REPORT_OUTPUT_PATH = os.path.join(RESULT_DIR, "cluster_report_stat.csv")
-TEXT_REPORT_OUTPUT_PATH = os.path.join(RESULT_DIR, "cluster_report_text.csv")
-with open(os.path.join(DATA_DIR, "mesh_crosswalk_inverted.json"), "r") as f:
-    MESH_CROSSWALK_INVERTED = json.load(f)
-
-CHOSEN_STATUSES = ["completed", "terminated"]  # ["completed", "suspended", "withdrawn", "terminated", "unknown status"]  # [] to ignore this section filter
-CHOSEN_CRITERIA = []  # ["in"]  # [] to ignore this selection filter
-CHOSEN_PHASES = []  # ["Phase 2"]  # [] to ignore this selection filter
-CHOSEN_COND_IDS = ["C04"]  # [] to ignore this selection filter
-CHOSEN_ITRV_IDS = []  # ["D02"]  # [] to ignore this selection filter
-CHOSEN_COND_LVL = 4
-CHOSEN_ITRV_LVL = 3
-
-
 def main():
-    input_dir = INPUT_DIR  # split_csv_for_multiprocessing(INPUT_DIR, NUM_WORKERS)
-    if LOAD_RESULTS:
-        with open(os.path.join(RESULT_DIR, "model_comparison.pkl"), "rb") as f:
+    input_dir = cfg.INPUT_DIR  # split_csv_for_multiprocessing(INPUT_DIR, NUM_WORKERS)
+    if cfg.LOAD_FINAL_RESULTS:
+        with open(os.path.join(cfg.RESULT_DIR, "model_comparison.pkl"), "rb") as f:
             cluster_metrics = pickle.load(f)
     else:
         cluster_metrics = {}
-        for model_type in MODEL_STR_MAP.keys():
-            cluster_metrics[model_type] = run_one_model(model_type, input_dir)        
+        for model_type in cfg.MODEL_STR_MAP.keys():
+            cluster_metrics[model_type] = run_one_model(model_type, input_dir)   
+            print("Done with %s" % model_type)     
     plot_model_comparison(cluster_metrics)
+    print("Model comparison finished!")
 
 
 def run_one_model(model_type: str, input_dir: str) -> dict:
     """ Cluster eligibility criteria using embeddings from one language model
     """
     # Initialize language model and data pipeline
-    if not LOAD_DATA:
+    if not cfg.LOAD_EMBEDDINGS:
         model, tokenizer, pooling_fn = get_model_pipeline(model_type)
         ds = get_dataset(input_dir, tokenizer)
-        rs = MultiProcessingReadingService(num_workers=1)  # NUM_WORKERS)
+        rs = MultiProcessingReadingService(num_workers=1)  # NUM_WORKERS) <-- buggy on hpc, for some reason, and not so impactful on performance
         dl = DataLoader2(ds, reading_service=rs)
     
     # Populate tensor with eligibility criteria embeddings
-    if not LOAD_DATA:
+    if not cfg.LOAD_EMBEDDINGS:
         raw_txts, metadatas = [], []
         embeddings = torch.empty((0, model.config.hidden_size))
-        data_loop = tqdm(enumerate(dl), total=NUM_STEPS, leave=False)
+        data_loop = tqdm(enumerate(dl), total=cfg.NUM_STEPS, leave=False)
         for i, (encoded, raw_txt, metadata) in data_loop:
             # Compute embeddings for this batch
-            encoded = {k: v.to(DEVICE) for k, v in encoded.items()}
+            encoded = {k: v.to(cfg.DEVICE) for k, v in encoded.items()}
             with torch.no_grad():
                 outputs = model(**encoded)
             ec_embeddings = pooling_fn(encoded, outputs)
@@ -109,31 +59,29 @@ def run_one_model(model_type: str, input_dir: str) -> dict:
             embeddings = torch.cat((embeddings, ec_embeddings.cpu()), dim=0)
             raw_txts.extend(raw_txt)
             metadatas.extend(metadata)
-            if i >= NUM_STEPS - 1: break
+            if i >= cfg.NUM_STEPS - 1: break
         
     # Save / load data
-    if LOAD_DATA:
-        embeddings, raw_txts, metadatas = load_data(OUTPUT_DIR, model_type)
+    if cfg.LOAD_EMBEDDINGS:
+        embeddings, raw_txts, metadatas = load_embeddings(cfg.OUTPUT_DIR, model_type)
     else:
-        save_data(OUTPUT_DIR, model_type, embeddings, raw_txts, metadatas)
+        save_data(cfg.OUTPUT_DIR, model_type, embeddings, raw_txts, metadatas)
     
     # Generate clusters and save results and metrics for model comparison
-    os.makedirs(RESULT_DIR, exist_ok=True)
-    for f in os.listdir(RESULT_DIR):
-        if ".csv" in f:
-            os.remove(os.path.join(RESULT_DIR, f))
-    text_report, stat_report, cluster_metrics =\
-        report_clusters(RESULT_DIR, OUTPUT_DIR, NUM_WORKERS,
-                        model_type, embeddings, raw_txts, metadatas)
+    os.makedirs(cfg.RESULT_DIR, exist_ok=True)
+    texts, stats, metrics, params =\
+        report_clusters(model_type, embeddings, raw_txts, metadatas)
     
     # Generate csv report from raw text results
-    with open(STAT_REPORT_OUTPUT_PATH, "w", newline="") as file:
-        csv.writer(file).writerows(stat_report)
-    with open(TEXT_REPORT_OUTPUT_PATH, "w", newline="") as file:
-        csv.writer(file).writerows(text_report)
+    stat_path = os.path.join(cfg.RESULT_DIR, "stat_%s.csv" % model_type)
+    text_path = os.path.join(cfg.RESULT_DIR, "text_%s.csv" % model_type)
+    params_path = os.path.join(cfg.RESULT_DIR, "params_%s.json" % model_type)
+    with open(stat_path, "w", newline="") as file: csv.writer(file).writerows(stats)
+    with open(text_path, "w", newline="") as file: csv.writer(file).writerows(texts)
+    with open(params_path, "w") as file: json.dump(params, file, indent=4)
     
     # Return metrics for this model
-    return cluster_metrics
+    return metrics
 
 
 def get_model_pipeline(model_type):
@@ -154,22 +102,22 @@ def get_model_pipeline(model_type):
             return token_sum / torch.clamp(input_expanded.sum(1), min=1e-9)
             
     # Return model (sent to correct device) and tokenizer
-    model_str = MODEL_STR_MAP[model_type]
+    model_str = cfg.MODEL_STR_MAP[model_type]
     model = AutoModel.from_pretrained(model_str)
     tokenizer = AutoTokenizer.from_pretrained(model_str)
-    return model.to(DEVICE), tokenizer, pooling_fn
+    return model.to(cfg.DEVICE), tokenizer, pooling_fn
 
 
 def get_dataset(data_dir, tokenizer):
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
-    ds = dpi.FileLister(data_dir, recursive=True, masks=CSV_FILE_MASK)\
+    ds = dpi.FileLister(data_dir, recursive=True, masks=cfg.CSV_FILE_MASK)\
         .open_files(mode="t")\
         .parse_csv()\
         .sharding_filter()\
         .filter_clinical_trial()\
-        .batch(batch_size=BATCH_SIZE)\
+        .batch(batch_size=cfg.BATCH_SIZE)\
         .tokenize(tokenizer=tokenizer)
     return ds
 
@@ -185,7 +133,7 @@ def save_data(dir_, model_type, embeddings, raw_txts, labels):
         pickle.dump(labels, f)
 
 
-def load_data(dir_, model_type):
+def load_embeddings(dir_, model_type):
     """ Simple loading function for model predictions
     """
     embeddings = torch.load(os.path.join(dir_, "embeddings_%s.pt" % model_type))
@@ -236,28 +184,28 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         ct_category = sample[self.col_id["category"]]
         
         # Check criterion phases
-        if len(CHOSEN_PHASES) > 0:
-            if all([p not in CHOSEN_PHASES for p in ct_phases]):
+        if len(cfg.CHOSEN_PHASES) > 0:
+            if all([p not in cfg.CHOSEN_PHASES for p in ct_phases]):
                 return metadata, False
         
         # Check criterion conditions
-        cond_lbls = self._get_cond_itrv_labels(ct_cond_ids, CHOSEN_COND_IDS, CHOSEN_COND_LVL)
+        cond_lbls = self._get_cond_itrv_labels(ct_cond_ids, cfg.CHOSEN_COND_IDS, cfg.CHOSEN_COND_LVL)
         if len(cond_lbls) == 0:
             return metadata, False
         
         # Check criterion interventions
-        itrv_lbls = self._get_cond_itrv_labels(ct_itrv_ids, CHOSEN_ITRV_IDS, CHOSEN_ITRV_LVL)
+        itrv_lbls = self._get_cond_itrv_labels(ct_itrv_ids, cfg.CHOSEN_ITRV_IDS, cfg.CHOSEN_ITRV_LVL)
         if len(itrv_lbls) == 0:
             return metadata, False
         
         # Check criterion status
-        if len(CHOSEN_STATUSES) > 0:
-            if ct_status not in CHOSEN_STATUSES:
+        if len(cfg.CHOSEN_STATUSES) > 0:
+            if ct_status not in cfg.CHOSEN_STATUSES:
                 return metadata, False
         
         # Check criterion type
-        if len(CHOSEN_CRITERIA) > 0:
-            if ct_category not in CHOSEN_CRITERIA:
+        if len(cfg.CHOSEN_CRITERIA) > 0:
+            if ct_category not in cfg.CHOSEN_CRITERIA:
                 return metadata, False
         
         # Update metadata
@@ -301,7 +249,7 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         cut_ct_ids = [c[:n_chars] for c in ct_ids if len(c.split(".")) >= level]
         
         # Map ids to non-code labels
-        labels = [MESH_CROSSWALK_INVERTED[c] for c in cut_ct_ids]
+        labels = [cfg.MESH_CROSSWALK_INVERTED[c] for c in cut_ct_ids]
         is_a_code = lambda lbl: (sum(c.isdigit() for c in lbl) + 1 == len(lbl))
         labels = [l for l in labels if not is_a_code(l)]
         
@@ -345,26 +293,28 @@ class Tokenizer(dpi.IterDataPipe):
         )
         
         
-def plot_model_comparison(cluster_metrics):
+def plot_model_comparison(metrics):
     """ Generate a comparison plot between models, based on how model embeddings
         produce good clusters
     """
     # aRRACH
+    to_plot = ["sil_score", "db_score", "nm_score", "homogeneity", "completeness", "v_measure"]
     def filter_fn(d: dict):
-        PLOTTED_METRICS = ["sil", "db", "nm", "h", "c", "v"]
-        d = {k: v for k, v in d.items() if k in PLOTTED_METRICS}
+        d = {k: v for k, v in d.items() if k in to_plot}
         d = {k: v / 10 if k == "db" else v for k, v in d.items()}
         return d
-    cluster_metrics = {k: filter_fn(v) for k, v in cluster_metrics.items()}
+    label_free_metrics = {k: filter_fn(v) for k, v in metrics["label_free"].items()}
+    label_dept_metrics = {k: filter_fn(v) for k, v in metrics["label_dept"].items()}
+    metrics = label_free_metrics.update(label_dept_metrics)
     
     # Retrieve model list from the data
-    labels = list(next(iter(cluster_metrics.values())).keys())
-    num_models = len(cluster_metrics.keys())
+    labels = list(next(iter(metrics.values())).keys())
+    num_models = len(metrics.keys())
     width = 0.6 / num_models  # Adjust width based on number of models
     
-    # Plot cluster_metrics for each model
+    # Plot metrics for each model
     fig, ax = plt.subplots(figsize=(12, 5))
-    for idx, (model_name, metrics) in enumerate(cluster_metrics.items()):
+    for idx, (model_name, metrics) in enumerate(metrics.items()):
         
         # Plot metric values
         x_values = [i + idx * width for i, _ in enumerate(labels)]
@@ -388,14 +338,14 @@ def plot_model_comparison(cluster_metrics):
     ax.set_xticks([i + width * (num_models - 1) / 2 for i in range(len(labels))])
     ax.set_xticklabels(labels, fontsize="large")
     ax.legend(fontsize="large")
-    plt.plot([-0.1, len(cluster_metrics) + 0.6], [0, 0], color="k")
+    plt.plot([-0.1, len(metrics) + 0.6], [0, 0], color="k")
     fig.tight_layout()
     
     # Save raw data and figure
-    if not LOAD_RESULTS:
-        with open(os.path.join(RESULT_DIR, "model_comparison.pkl"), "wb") as f:
-            pickle.dump(cluster_metrics, f)
-    plt.savefig(os.path.join(RESULT_DIR, "model_comparison.png"), dpi=300)
+    if not cfg.LOAD_FINAL_RESULTS:
+        with open(os.path.join(cfg.RESULT_DIR, "model_comparison.pkl"), "wb") as f:
+            pickle.dump(metrics, f)
+    plt.savefig(os.path.join(cfg.RESULT_DIR, "model_comparison.png"), dpi=300)
 
 
 def print_data_summary(metadatas: list[dict[str, str]]) -> None:
@@ -403,16 +353,16 @@ def print_data_summary(metadatas: list[dict[str, str]]) -> None:
     """
     # What filters were used
     print("Filters:")
-    print("\t- Status: %s" % CHOSEN_STATUSES)
-    print("\t- Type: %s" % CHOSEN_CRITERIA)
-    print("\t- Phase: %s" % CHOSEN_PHASES)
-    print("\t- Cond: %s" % CHOSEN_COND_IDS)
-    print("\t- Itrv: %s" % CHOSEN_ITRV_IDS)
+    print("\t- Status: %s" % cfg.CHOSEN_STATUSES)
+    print("\t- Type: %s" % cfg.CHOSEN_CRITERIA)
+    print("\t- Phase: %s" % cfg.CHOSEN_PHASES)
+    print("\t- Cond: %s" % cfg.CHOSEN_COND_IDS)
+    print("\t- Itrv: %s" % cfg.CHOSEN_ITRV_IDS)
     
     # What level were used
     print("Levels:")
-    print("\t- Cond: %s" % CHOSEN_COND_LVL)
-    print("\t- Itrv: %s" % CHOSEN_ITRV_LVL)
+    print("\t- Cond: %s" % cfg.CHOSEN_COND_LVL)
+    print("\t- Itrv: %s" % cfg.CHOSEN_ITRV_LVL)
     
     # Get labels
     ct_paths = [d["path"] for d in metadatas]

@@ -16,7 +16,7 @@ from tqdm import tqdm
 from typing import Union
 
 
-INPUT_FORMAT = 'dict'  # 'json', 'xlsx', 'dict'
+INPUT_FORMAT = 'json'  # 'json', 'xlsx', 'dict'
 LOAD_CSV_RESULTS = False
 EXAMPLE = False
 DATA_DIR = os.path.join('data', 'raw_files', INPUT_FORMAT)

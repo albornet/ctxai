@@ -7,9 +7,10 @@ import torch
 import optuna
 import hdbscan 
 import matplotlib.pyplot as plt
+import cluster_config as cfg
 from optuna.samplers import TPESampler
 from collections import Counter, OrderedDict
-from itertools import zip_longest
+from itertools import zip_longest, product
 from tqdm import tqdm
 from requests.exceptions import ConnectionError
 from openai.error import (
@@ -34,53 +35,7 @@ from sklearn.metrics import (
 )
 
 
-LOAD_REDUCED_EMBEDDINGS = True
-CLUSTER_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
-PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
-CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
-PLOT_RED_DIM = 2  # either 2 or 3
-DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster 
-N_ITER_MAX_TSNE = 10_000  # 1_000, 2_000, 10_000
-FIG_SIZE = (11, 11)
-TEXT_SIZE = 16
-COLORS = np.array((
-    list(plt.cm.tab20(np.arange(20)[0::2])) + \
-    list(plt.cm.tab20(np.arange(20)[1::2]))) * 5
-)
-NA_COLOR_ALPHA = 0.1
-NOT_NA_COLOR_ALPHA = 0.8
-NA_COLOR = np.array([0.0, 0.0, 0.0, NA_COLOR_ALPHA])
-COLORS[:, -1] = NOT_NA_COLOR_ALPHA
-SCATTER_PARAMS = {"s": 50, "linewidth": 0}
-LEAF_SEPARATION = 0.3
-DO_OPTUNA = False
-N_OPTUNA_TRIALS = 100
-OPTUNA_PARAM_RANGES = {
-    "max_cluster_size_primary": [0.02, 0.1],
-    "min_cluster_size_primary": [0.0, 0.01],
-    "min_samples_primary": [0.0, 0.004],
-    "max_cluster_size_secondary": [0.3, 1.0],
-    "min_cluster_size_secondary": [0.0, 0.4],
-    "min_samples_secondary": [0.0, 0.004],
-    "alpha": [0.5, 5.0],
-    "cluster_selection_method": ["eom"],
-}
-NO_OPTUNA_PARAMS = {
-    'max_cluster_size_primary': 0.046785350806582304,
-    'min_cluster_size_primary': 0.006506556037527307,
-    'min_samples_primary': 1.1262890212484896e-05,
-    'max_cluster_size_secondary': 0.8623302183161973,
-    'min_cluster_size_secondary': 0.18352927484472079,
-    'min_samples_secondary': 0.0038758800804370368,
-    'alpha': 2.8146278364855495,
-    'cluster_selection_method': 'eom'
-}
-
-
-def report_clusters(result_dir: str,
-                    output_dir: str,
-                    num_workers: int,
-                    model_type: str,
+def report_clusters(model_type: str,
                     embeddings: torch.Tensor,
                     raw_txt: list[str],
                     metadata: list[str],
@@ -90,68 +45,64 @@ def report_clusters(result_dir: str,
         and log a scatter plot of the low-dimensional data to tensorboard
     """
     # Reduce dimensionality of all criteria"s embeddings
-    load_path = os.path.join(output_dir, "reduced_embeddings_%s.pkl" % model_type)
-    if LOAD_REDUCED_EMBEDDINGS:
+    load_path = os.path.join(cfg.OUTPUT_DIR, "reduced_embeddings_%s.pkl" % model_type)
+    if cfg.LOAD_REDUCED_EMBEDDINGS:
         with open(load_path, "rb") as f:
             cluster_data = pickle.load(f)
             plot_data = cluster_data  # pickle.load(f)
     else:
-        cluster_data, plot_data = get_reduced_data(embeddings, metadata, num_workers)
+        cluster_data, plot_data = get_reduced_data(embeddings, metadata)
         with open(load_path, "wb") as f:
             pickle.dump(plot_data, f)
     
     # Load token info, including "true" cluster labels
     token_info = get_token_info(plot_data, raw_txt, metadata, label_type)
     
-    # Lood for best set of hyper-parameters for clustering
-    params = find_best_cluster_params(cluster_data, num_workers)
+    # Look for best set of hyper-parameters for clustering
+    params = find_best_cluster_params(cluster_data)
     
     # Cluster selected criteria, based on reduced embeddings
-    print("Clustering %s eligibility criteria" % len(token_info["plot_data"]))
-    cluster_info = clusterize(
-        data=cluster_data, mode="primary", params=params, num_workers=num_workers
-    )
-    if cluster_info is not None and DO_SUBCLUSTERIZE:
-        cluster_info = subclusterize(
-            cluster_info, params=params, num_workers=num_workers
-        )
+    load_path = os.path.join(cfg.OUTPUT_DIR, "cluster_info_%s.pkl" % model_type)
+    if cfg.LOAD_CLUSTER_INFO:
+        with open(load_path, "rb") as f:
+            cluster_info = pickle.load(f)
+    else:
+        print("Clustering %s eligibility criteria" % len(token_info["plot_data"]))
+        cluster_info = clusterize(data=cluster_data, mode="primary", params=params)
+        if cluster_info is not None and cfg.DO_SUBCLUSTERIZE:
+            cluster_info = subclusterize(cluster_info, params=params)
+        with open(load_path, "wb") as f:
+            pickle.dump(plot_data, f)
         
-    # Plot computed clusters and write reports about their content
-    fig_path = os.path.join(result_dir, "cluster_plot_%s.png" % model_type)
-    cluster_metrics = plot_cluster_hierarchy(
-        token_info, cluster_info, fig_path, red_dim=PLOT_RED_DIM,
-    )
-    text_report, stat_report = generate_cluster_reports(token_info, cluster_info)
+    # Plot and evaluate clusters and their content
+    fig_path = os.path.join(cfg.RESULT_DIR, "plot_%s.png" % model_type)
+    plot_cluster_hierarchy(token_info, cluster_info, fig_path, red_dim=cfg.PLOT_RED_DIM)
+    stats, texts, metrics = generate_cluster_reports(token_info, cluster_info, metadata)
     
     # Return all results
-    return text_report, stat_report, cluster_metrics
+    return stats, texts, metrics, params
 
 
-def find_best_cluster_params(cluster_data: np.ndarray,
-                             num_workers: int
-                             ) -> dict:
+def find_best_cluster_params(cluster_data: np.ndarray) -> dict:
     """ Use optuna to determine best set of cluster parameters (or load them)
     """
-    if DO_OPTUNA:
+    if cfg.DO_OPTUNA:
         print("Looking for best clustering hyper-parameters")
         study = optuna.create_study(sampler=TPESampler(), direction="maximize")
-        study_objective = lambda trial: objective_fn(trial, cluster_data, num_workers)
-        study.optimize(study_objective, n_trials=N_OPTUNA_TRIALS)  #, n_jobs=num_workers)
+        study_objective = lambda trial: objective_fn(trial, cluster_data)
+        study.optimize(study_objective, n_trials=cfg.N_OPTUNA_TRIALS)  #, n_jobs=cfg.NUM_WORKERS) <-- bad idea because each process would already use NUM_WORKERS
         print("Best params: %s" % study.best_params)
         return study.best_params
     else:
-        return NO_OPTUNA_PARAMS
+        return cfg.NO_OPTUNA_PARAMS
 
 
-def objective_fn(trial: optuna.Trial,
-                 cluster_data: np.ndarray,
-                 num_workers: int,
-                 ) -> float:
+def objective_fn(trial: optuna.Trial, cluster_data: np.ndarray) -> float:
     """ Suggest a new set of hyper-parameters and compute associated metric
     """
     # Suggests parameters
     params = {}
-    for name, choices in OPTUNA_PARAM_RANGES.items():
+    for name, choices in cfg.OPTUNA_PARAM_RANGES.items():
         if not isinstance(choices, (list, tuple)):
             raise TypeError("Boundary must be a list or a tuple")
         if isinstance(choices[0], (str, bool)):
@@ -167,13 +118,9 @@ def objective_fn(trial: optuna.Trial,
             
     # Perform clustering
     try:
-        cluster_info = clusterize(
-            data=cluster_data, mode="primary", params=params, num_workers=num_workers,
-        )
-        if cluster_info is not None and DO_SUBCLUSTERIZE:
-            cluster_info = subclusterize(
-                cluster_info, params=params, num_workers=num_workers,
-            )
+        cluster_info = clusterize(data=cluster_data, mode="primary", params=params)
+        if cluster_info is not None and cfg.DO_SUBCLUSTERIZE:
+            cluster_info = subclusterize(cluster_info, params=params)
     except:
         cluster_info = None
     
@@ -193,7 +140,6 @@ def objective_fn(trial: optuna.Trial,
 
 def get_reduced_data(embeddings: np.ndarray,
                      metadata: dict,
-                     num_workers: int,
                      ) -> tuple[np.ndarray, np.ndarray]:
     """ Reduce data using t-SNE (or PCA) and return two separate arrays, one for
         clustering and one for plotting
@@ -201,19 +147,17 @@ def get_reduced_data(embeddings: np.ndarray,
     print("\nReducing dim of %s eligibility criteria embeddings" % len(metadata))
     cluster_data = compute_reduced_repr(
         embeddings,
-        dim=CLUSTER_RED_DIM,
-        algorithm=CLUSTER_DIM_RED_ALGO,
-        num_workers=num_workers,
+        dim=cfg.CLUSTER_RED_DIM,
+        algorithm=cfg.CLUSTER_DIM_RED_ALGO,
     )
-    if CLUSTER_RED_DIM == PLOT_RED_DIM\
-    and CLUSTER_DIM_RED_ALGO == PLOT_DIM_RED_ALGO:
+    if cfg.CLUSTER_RED_DIM == cfg.PLOT_RED_DIM\
+    and cfg.CLUSTER_DIM_RED_ALGO == cfg.PLOT_DIM_RED_ALGO:
         plot_data = cluster_data
     else:
         plot_data = compute_reduced_repr(
             cluster_data,  # embeddings,
-            dim=PLOT_RED_DIM,
-            algorithm=PLOT_DIM_RED_ALGO,
-            num_workers=num_workers,
+            dim=cfg.PLOT_RED_DIM,
+            algorithm=cfg.PLOT_DIM_RED_ALGO,
         )
     return cluster_data, plot_data
 
@@ -235,14 +179,14 @@ def get_token_info(plot_data, raw_txt, metadata, label_type):
     return token_info
 
     
-def clusterize(data: np.ndarray, mode=str, params=dict, num_workers=int) -> dict:
+def clusterize(data: np.ndarray, mode=str, params=dict) -> dict:
     """ Cluster data points with hdbscan algorithm and return cluster information
     """
     # Identify best cluster parameters given the data and cluster mode
     cluster_params = select_cluster_params(len(data), mode, params)
     
     # Find cluster affordances based on cluster hierarchy
-    clusterer = hdbscan.HDBSCAN(**cluster_params, core_dist_n_jobs=num_workers)
+    clusterer = hdbscan.HDBSCAN(**cluster_params, core_dist_n_jobs=cfg.NUM_WORKERS)
     clusterer.fit(data)
     n_clusters = clusterer.labels_.max() + 1  # -1 being ignored
     if n_clusters <= 1: return None
@@ -274,15 +218,14 @@ def clusterize(data: np.ndarray, mode=str, params=dict, num_workers=int) -> dict
     }
 
 
-def subclusterize(cluster_info: dict, params: dict, num_workers: int) -> dict:
+def subclusterize(cluster_info: dict, params: dict) -> dict:
     """ Update cluster results by trying to subcluster any computed cluster
     """
     # For each cluster, try to cluster it further with new hdbscan parameters
     for cluster_id in range(cluster_info["n_clusters"]):  # not range(-1, ...)
         subset_ids = np.where(cluster_info["cluster_lbls"] == cluster_id)[0]
         subset_data = cluster_info["cluster_data"][subset_ids]
-        new_cluster_info = clusterize(data=subset_data, mode="secondary",
-                                      params=params, num_workers=num_workers)
+        new_cluster_info = clusterize(data=subset_data, mode="secondary", params=params)
         
         # If the sub-clustering is successful, record new information
         if new_cluster_info is not None:
@@ -297,8 +240,7 @@ def subclusterize(cluster_info: dict, params: dict, num_workers: int) -> dict:
                 new_member_ids = new_cluster_info["sorted_cluster_member_ids"][i]
                 new_member_ids = subset_ids[new_member_ids]  # in original clustering
                 cluster_info["cluster_lbls"][new_member_ids] = new_cluster_id
-                cluster_info["sorted_cluster_member_ids"][new_cluster_id] =\
-                    new_member_ids
+                cluster_info["sorted_cluster_member_ids"][new_cluster_id] = new_member_ids
     
     # Return updated cluster info
     return cluster_info
@@ -310,39 +252,31 @@ def select_cluster_params(n_samples: int,
                           ) -> dict:
     """ Select correct cluster parameters, for different conditions
     """
+    # Load base parameters
     max_cluster_size = params["max_cluster_size_%s" % mode]
     min_cluster_size = params["min_cluster_size_%s" % mode]
     min_samples = params["min_samples_%s" % mode]
     
-    if isinstance(min_cluster_size, int):
-        min_cluster_size = min_cluster_size
-    else:
-        min_cluster_size = max(2, int(n_samples * min_cluster_size))
-        
-    if isinstance(max_cluster_size, int):
-        max_cluster_size = max_cluster_size
-    else:
-        max_cluster_size = max(10, int(n_samples * max_cluster_size))
-        
-    if isinstance(min_samples, int):
-        min_samples = min_samples
-    else:
-        min_samples = max(1, int(n_samples * min_samples))
+    # Adapter function (int vs float)
+    def adapt_param_fn(value, min_value, factor=n_samples):
+        if isinstance(value, int): return value
+        else: return max(min_value, int(factor * value))
     
+    # Return all selected cluster parameters
     return {
         "cluster_selection_method": params["cluster_selection_method"],
         "alpha": params["alpha"],
         "allow_single_cluster": True,
-        "min_cluster_size": min_cluster_size,
-        "max_cluster_size": max_cluster_size,
-        "min_samples": min_samples,
+        "min_cluster_size": adapt_param_fn(min_cluster_size, 2, n_samples),
+        "max_cluster_size": adapt_param_fn(max_cluster_size, 10, n_samples),
+        "min_samples": adapt_param_fn(min_samples, 1, n_samples),
     }
 
 
-def generate_cluster_reports(token_info, cluster_info):
+def generate_cluster_reports(token_info, cluster_info, metadata):
     """ Characterize clusters and generate statistics given clinical trials
     """
-    # Compute useful statistics
+    # Compute useful statistics and metrics
     cluster_prevalences, label_prevalences =\
         compute_cluster_statistics(token_info, cluster_info)
     
@@ -368,7 +302,8 @@ def generate_cluster_reports(token_info, cluster_info):
         n_cts=len(set(token_info["paths"])),
         n_ecs=len(token_info["paths"]),
     )
-    return text_report, stat_report
+    cluster_metrics = evaluate_clustering(cluster_info, metadata)
+    return text_report, stat_report, cluster_metrics
 
 
 def generate_text_report(grouped_by_cluster: list[list[str]],
@@ -525,7 +460,6 @@ def prompt_chatgpt(system_prompt, user_prompt, max_retries=5):
     return "No response, open-ai reached rate limit or other network issue occurred."
 
 
-
 def plot_cluster_hierarchy(token_info: dict,
                            cluster_info: dict,
                            fig_path: str,
@@ -536,101 +470,68 @@ def plot_cluster_hierarchy(token_info: dict,
         hdbscan), and the empirical cluster tree
     """
     # Initialize figure and load data
-    fig = plt.figure(figsize=FIG_SIZE)
+    fig = plt.figure(figsize=cfg.FIG_SIZE)
     plot_kwargs = {} if red_dim <= 2 else {"projection": "3d"}
     true_labels = token_info["true_lbls"]
     cluster_labels = cluster_info["cluster_lbls"]
     n_labels = len(set(true_labels))
     n_clusters = cluster_labels.max() + 1
-    n_samples = len(true_labels)
-    print("Plotting %s criteria embeddings" % n_samples)
+    print("Plotting %s criteria embeddings" % len(true_labels))
     
     # Retrieve relevant data
     cluster_colors, class_colors = get_cluster_colors(token_info, cluster_info)
-    cluster_data = cluster_info["cluster_data"]
     plot_data = token_info["plot_data"]
     if subset_ids is not None:  # take subset for secondary cluster displays
         plot_data = plot_data[subset_ids]
         class_colors = [class_colors[i] for i in subset_ids[0]]
-    
-    # Evaluate clustering quality (label-free)
-    sil_score = silhouette_score(cluster_data, cluster_labels)
-    db_score = davies_bouldin_score(cluster_data, cluster_labels)
-    du_index = dunn_index(cluster_data, cluster_labels)
-    sup_title_1 = "N: %i, SIL: %.2f, DB: %.2f, Dunn: %.2f" %\
-        (n_samples, sil_score, db_score, du_index)
-    
-    # Evaluate clustering quality (label-dependent)
-    ar_index = adjusted_rand_score(true_labels, cluster_labels)
-    nm_index = normalized_mutual_info_score(true_labels, cluster_labels)
-    fm_index = fowlkes_mallows_score(true_labels, cluster_labels)
-    homogeneity, completeness, v_index = hcv_measure(true_labels, cluster_labels)
-    sup_title_2 = "ARI: %.2f, NMI: %.2f, FMI: %.2f, H: %.2f, C: %.2f, V: %.2f" %\
-        (ar_index, nm_index, fm_index, homogeneity, completeness, v_index)
-    
+        
     # Visualize empirical clusters
     ax1 = fig.add_subplot(2, 2, 1, **plot_kwargs)
-    ax1.scatter(*plot_data.T, c=cluster_colors, **SCATTER_PARAMS)
+    ax1.scatter(*plot_data.T, c=cluster_colors, **cfg.SCATTER_PARAMS)
     ax1.set_xticklabels([]); ax1.set_yticklabels([])
     ax1.set_xticks([]); ax1.set_yticks([])
-    ax1.set_title("Data and %s empirical clusters" % n_clusters, fontsize=TEXT_SIZE)
+    ax1.set_title("Data and %s clusters" % n_clusters, fontsize=cfg.TEXT_SIZE)
     
     # Visualize empirical clusters (but only the samples with an assigned cluster)
     cluster_only_indices = np.where(cluster_labels > -1)[0]
     clustered_data = plot_data[cluster_only_indices]
     clustered_colors = [cluster_colors[i] for i in cluster_only_indices]    
     ax2 = fig.add_subplot(2, 2, 2, **plot_kwargs)
-    ax2.scatter(*clustered_data.T, c=clustered_colors, **SCATTER_PARAMS)
+    ax2.scatter(*clustered_data.T, c=clustered_colors, **cfg.SCATTER_PARAMS)
     ax2.set_xticklabels([]); ax2.set_yticklabels([])
     ax2.set_xticks([]); ax2.set_yticks([])
-    ax2.set_title("Data and %s empirical clusters (without unassigned samples)"\
-        % (n_clusters), fontsize=TEXT_SIZE)
+    ax2.set_title("Data and %s assigned clusters" % (n_clusters), fontsize=cfg.TEXT_SIZE)
     
     # Visualize theoretical clusters (using, e.g., ICD10-CM code hierarchy)
     ax3 = fig.add_subplot(2, 2, 3, **plot_kwargs)
-    ax3.scatter(*plot_data.T, c=class_colors, **SCATTER_PARAMS)
+    ax3.scatter(*plot_data.T, c=class_colors, **cfg.SCATTER_PARAMS)
     ax3.set_xticklabels([]); ax3.set_yticklabels([])
     ax3.set_xticks([]); ax3.set_yticks([])
-    ax3.set_title("Data and %s labels" % n_labels, fontsize=TEXT_SIZE)
+    ax3.set_title("Data and %s labels" % n_labels, fontsize=cfg.TEXT_SIZE)
     
     # Visualize empirical cluster tree
     if hasattr(cluster_info["clusterer"], "condensed_tree_"):
         ax4 = fig.add_subplot(2, 2, 4)
         cluster_info["clusterer"].condensed_tree_.plot(
-            axis=ax4, leaf_separation=LEAF_SEPARATION, colorbar=True)
-        ax4.set_title("Empirical cluster tree", fontsize=TEXT_SIZE)
+            axis=ax4, leaf_separation=cfg.LEAF_SEPARATION, colorbar=True)
+        ax4.set_title("Empirical cluster tree", fontsize=cfg.TEXT_SIZE)
         ax4.get_yaxis().set_tick_params(left=False)
         ax4.get_yaxis().set_tick_params(right=False)
-        ax4.set_ylabel("", fontsize=TEXT_SIZE)
+        ax4.set_ylabel("", fontsize=cfg.TEXT_SIZE)
         ax4.set_yticks([])
         ax4.spines["top"].set_visible(True)
         ax4.spines["right"].set_visible(True)
         ax4.spines["bottom"].set_visible(True)
     
     # Save figure
-    plt.suptitle(sup_title_1 + "\n" + sup_title_2, fontsize=TEXT_SIZE)
     plt.tight_layout()
     plt.savefig(fig_path, dpi=150)
     plt.close()
-    
-    # Return cluster quality metrics
-    return {
-        "sil": sil_score,
-        "db": db_score,
-        "du": du_index,
-        "ar": ar_index,
-        "nm": nm_index,
-        "fm": fm_index,
-        "h": homogeneity,
-        "c": completeness,
-        "v": v_index,
-    }
     
 
 def compute_reduced_repr(embeddings: np.ndarray,
                          dim: int,
                          algorithm: str,
-                         num_workers: int,
                          ) -> np.ndarray:
     """ Reduce the dimensionality of high-dimensional concept embeddings
     """    
@@ -649,11 +550,11 @@ def compute_reduced_repr(embeddings: np.ndarray,
             "n_components": dim,
             "perplexity": 30.0,  # 10.0, 30.0, 100.0, perplexity
             "learning_rate": "auto",  # or any value in [10 -> 1000] may be good
-            "n_iter": N_ITER_MAX_TSNE,  # 10000, 2000
+            "n_iter": cfg.N_ITER_MAX_TSNE,  # 10000, 2000
             "n_iter_without_progress": 1000,  # 200, 1000
             "metric": "cosine",
             "init": "random",  # "pca", "random"
-            "n_jobs": num_workers,
+            "n_jobs": cfg.NUM_WORKERS,
             "verbose": 2,
             "method": "barnes_hut" if dim < 4 else "exact",  # "exact" very slow
         }
@@ -676,27 +577,26 @@ def get_cluster_colors(token_info, cluster_info):
     cluster_lbls = cluster_info["cluster_lbls"]
     unique_classes = list(set(class_lbls))
     unique_clusters = list(set(cluster_lbls))
-    # cluster_to_id = {v: i for i, v in enumerate(unique_clusters)}
-    # class_to_id = {v: i for i, v in enumerate(unique_classes)}
     
     # In this case, true labels define the maximum number of colours
     if len(unique_classes) >= len(unique_clusters):
         color_map = best_color_match(
             cluster_lbls, class_lbls, unique_clusters, unique_classes)
         color_map = {k: unique_classes.index(v) for k, v in color_map.items()}
-        cluster_colors = [COLORS[color_map[i]]
-                          if i != -1 else NA_COLOR for i in cluster_lbls]
-        class_colors = [COLORS[unique_classes.index(l)]
-                        if l != -1 else NA_COLOR for l in class_lbls]
+        cluster_colors = [cfg.COLORS[color_map[i]]
+                          if i != -1 else cfg.NA_COLOR for i in cluster_lbls]
+        class_colors = [cfg.COLORS[unique_classes.index(l)]
+                        if l != -1 else cfg.NA_COLOR for l in class_lbls]
     
     # In this case, empirical clusters define the maximum number of colours
     else:
         color_map = best_color_match(
             class_lbls, cluster_lbls, unique_classes, unique_clusters)
         color_map = {unique_classes.index(k): v for k, v in color_map.items()}
-        cluster_colors = [COLORS[i] if i >= 0 else NA_COLOR for i in cluster_lbls]
-        class_colors = [COLORS[color_map[unique_classes.index(l)]]
-                        if l != -1 else NA_COLOR for l in class_lbls]
+        cluster_colors = [cfg.COLORS[i]
+                          if i >= 0 else cfg.NA_COLOR for i in cluster_lbls]
+        class_colors = [cfg.COLORS[color_map[unique_classes.index(l)]]
+                        if l != -1 else cfg.NA_COLOR for l in class_lbls]
         
     # Return aligned empirical and theorical clusters
     return cluster_colors, class_colors
@@ -714,3 +614,49 @@ def best_color_match(src_lbls, tgt_lbls, unique_src_lbls, unique_tgt_lbls):
     
     rows, cols = linear_sum_assignment(cost_matrix)
     return {unique_src_lbls[i]: unique_tgt_lbls[j] for i, j in zip(rows, cols)}
+
+
+def evaluate_clustering(cluster_info, metadata):
+    """ Run final evaluation of clusters, based on phase(s), condition(s), and
+        interventions(s). Duplicate each samples for any combination.    
+    """
+    # Initialize data
+    cluster_metrics = {}
+    cluster_data = cluster_info["cluster_data"]
+    cluster_lbls = cluster_info["cluster_lbls"]
+    phase_lbls = [l["phase"] for l in metadata]
+    cond_lbls = [l["condition"] for l in metadata]
+    itrv_lbls = [l["intervention"] for l in metadata]
+    
+    # Create a new sample for each [phase, cond, itrv] label combination
+    dupl_cluster_lbls = []
+    dupl_true_lbls = []
+    for cluster_lbl, phases, conds, itrvs in\
+        zip(cluster_lbls, phase_lbls, cond_lbls, itrv_lbls):
+        true_lbl_combinations = list(product(phases, conds, itrvs))
+        for true_lbl_combination in true_lbl_combinations:
+            dupl_cluster_lbls.append(cluster_lbl)
+            dupl_true_lbls.append(" - ".join(true_lbl_combination))
+    
+    # Evaluate clustering quality (label-free)
+    cluster_metrics["label_free"] = {
+        "sil_score": silhouette_score(cluster_data, cluster_lbls),
+        "db_score": davies_bouldin_score(cluster_data, cluster_lbls),
+        "dunn_score": dunn_index(cluster_data, cluster_lbls),
+    }
+    
+    # Evaluate clustering quality (label-dependent)
+    h, c, v = hcv_measure(dupl_true_lbls, dupl_cluster_lbls)
+    cluster_metrics["label_dept"] = {
+        "ar_score": adjusted_rand_score(dupl_true_lbls, dupl_cluster_lbls),
+        "nm_score": normalized_mutual_info_score(dupl_true_lbls, dupl_cluster_lbls),
+        "fm_score": fowlkes_mallows_score(dupl_true_lbls, dupl_cluster_lbls),
+        "homogeneity": h,
+        "completeness": c,
+        "v_measure": v,
+    }
+    
+    # Return all metrics and some info
+    cluster_metrics["n_samples"] = len(cluster_lbls)
+    cluster_metrics["n_duplicated_samples"] = len(dupl_cluster_lbls)
+    return cluster_metrics
