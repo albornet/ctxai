@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=41
 #SBATCH --mem=48gb
-#SBATCH --time=0-05:00:00
+#SBATCH --time=7-00:00:00
 #SBATCH --output=logs/job_%j.txt
 #SBATCH --error=logs/job_%j.err
 

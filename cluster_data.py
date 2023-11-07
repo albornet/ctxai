@@ -69,16 +69,13 @@ def run_one_model(model_type: str, input_dir: str) -> dict:
     
     # Generate clusters and save results and metrics for model comparison
     os.makedirs(cfg.RESULT_DIR, exist_ok=True)
-    texts, stats, metrics, params =\
-        report_clusters(model_type, embeddings, raw_txts, metadatas)
+    texts, stats, metrics = report_clusters(model_type, embeddings, raw_txts, metadatas)
     
     # Generate csv report from raw text results
     stat_path = os.path.join(cfg.RESULT_DIR, "stat_%s.csv" % model_type)
     text_path = os.path.join(cfg.RESULT_DIR, "text_%s.csv" % model_type)
-    params_path = os.path.join(cfg.RESULT_DIR, "params_%s.json" % model_type)
     with open(stat_path, "w", newline="") as file: csv.writer(file).writerows(stats)
     with open(text_path, "w", newline="") as file: csv.writer(file).writerows(texts)
-    with open(params_path, "w") as file: json.dump(params, file, indent=4)
     
     # Return metrics for this model
     return metrics

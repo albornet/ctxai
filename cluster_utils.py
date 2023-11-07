@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import pickle
 import openai
 import numpy as np
@@ -59,7 +60,7 @@ def report_clusters(model_type: str,
     token_info = get_token_info(plot_data, raw_txt, metadata, label_type)
     
     # Look for best set of hyper-parameters for clustering
-    params = find_best_cluster_params(cluster_data)
+    params = find_best_cluster_params(cluster_data, model_type)
     
     # Cluster selected criteria, based on reduced embeddings
     load_path = os.path.join(cfg.OUTPUT_DIR, "cluster_info_%s.pkl" % model_type)
@@ -80,21 +81,33 @@ def report_clusters(model_type: str,
     stats, texts, metrics = generate_cluster_reports(token_info, cluster_info, metadata)
     
     # Return all results
-    return stats, texts, metrics, params
+    return stats, texts, metrics
 
 
-def find_best_cluster_params(cluster_data: np.ndarray) -> dict:
+def find_best_cluster_params(cluster_data: np.ndarray, model_type: str) -> dict:
     """ Use optuna to determine best set of cluster parameters (or load them)
     """
+    params_path = os.path.join(cfg.RESULT_DIR, "params_%s.json" % model_type)
+    
+    # Find and save best hyper-parameters
     if cfg.DO_OPTUNA:
         print("Looking for best clustering hyper-parameters")
         study = optuna.create_study(sampler=TPESampler(), direction="maximize")
         study_objective = lambda trial: objective_fn(trial, cluster_data)
         study.optimize(study_objective, n_trials=cfg.N_OPTUNA_TRIALS)  #, n_jobs=cfg.NUM_WORKERS) <-- bad idea because each process would already use NUM_WORKERS
         print("Best params: %s" % study.best_params)
+        with open(params_path, "w") as file:
+            json.dump(study.best_params, file, indent=4)
         return study.best_params
+    
+    # Try to load best hyper-parameters and return defaults otherwise
     else:
-        return cfg.NO_OPTUNA_PARAMS
+        try:
+            with open(params_path, 'r') as file:
+                return json.load(file)
+        except FileNotFoundError:
+            print("Clustering parameters not found, using default parameters")
+            return cfg.DEFAULT_CLUSTERING_PARAMS
 
 
 def objective_fn(trial: optuna.Trial, cluster_data: np.ndarray) -> float:
@@ -386,19 +399,19 @@ def compute_proportions(lbl_list, unique_lbls):
     return result
 
 
-def pool_cluster_criteria(criterion_txts, method="chatgpt"):
+def pool_cluster_criteria(criterion_txts):
     """ For each cluster, summarize all belonging criteria to a single sentence
     """
     # Take the criterion closest to the cluster medoid
-    if method == "closest":
+    if cfg.CLUSTER_SUMMARIZATION_METHOD == "closest":
         pooled_criterion_txts = [txts[0] for txts in criterion_txts]
     
     # Take shortest from the 10 criteria closest to the cluster medoid
-    elif method == "shortest":
+    elif cfg.CLUSTER_SUMMARIZATION_METHOD == "shortest":
         pooled_criterion_txts = [min(txts, key=len) for txts in criterion_txts]
     
     # Use ChatGPT-3.5 to summarize the 10 criteria closest to the cluster medoid
-    elif method == "chatgpt":
+    elif cfg.CLUSTER_SUMMARIZATION_METHOD == "chatgpt":
         # Authentificate with a valid api-key
         api_path = os.path.join("data", "api-key-risklick.txt")
         try:
@@ -428,7 +441,6 @@ def pool_cluster_criteria(criterion_txts, method="chatgpt"):
             post_processed = "criterion - ".join(
                 [s.capitalize() for s in response.split("criterion - ")]
             )
-            # pooled_criterion_txts.append(post_processed)
             pooled_criterion_txts.append(post_processed.replace("\n", " "))
     
     # Handle wrong method name and return the results
@@ -548,12 +560,12 @@ def compute_reduced_repr(embeddings: np.ndarray,
     elif algorithm == "tsne":
         params = {
             "n_components": dim,
-            "perplexity": 30.0,  # 10.0, 30.0, 100.0, perplexity
+            "perplexity": 30.0,  # 10.0, 30.0, 100.0
             "learning_rate": "auto",  # or any value in [10 -> 1000] may be good
             "n_iter": cfg.N_ITER_MAX_TSNE,  # 10000, 2000
             "n_iter_without_progress": 1000,  # 200, 1000
             "metric": "cosine",
-            "init": "random",  # "pca", "random"
+            "init": "pca",  # "pca", "random"
             "n_jobs": cfg.NUM_WORKERS,
             "verbose": 2,
             "method": "barnes_hut" if dim < 4 else "exact",  # "exact" very slow
@@ -562,7 +574,7 @@ def compute_reduced_repr(embeddings: np.ndarray,
 
 
 def dunn_index(cluster_data: np.ndarray, cluster_lbls: np.ndarray) -> float:
-    """ Compute Dunn index using torch metrics
+    """ Compute Dunn index using torch-metrics
     """
     dunn = DunnIndex(p=2)
     metric = dunn(torch.from_numpy(cluster_data), torch.from_numpy(cluster_lbls))
