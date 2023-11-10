@@ -51,10 +51,7 @@ def main():
             
         # Initialize data processors
         ds = get_dataset(DATA_DIR, INPUT_FORMAT, shuffle=True)
-        rs = MultiProcessingReadingService(
-            num_workers=NUM_WORKERS,
-            prefetch_factor=PREFETCH_FACTOR,
-        )
+        rs = MultiProcessingReadingService(num_workers=NUM_WORKERS)
         dl = DataLoader2(ds, reading_service=rs)
         
         # Write parsed criteria to the output file

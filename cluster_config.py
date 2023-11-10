@@ -10,27 +10,28 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
 args = parser.parse_args()
+USE_CUML = True
 NUM_WORKERS = 40 if args.hpc else 12
 LOAD_FINAL_RESULTS = False
 LOAD_EMBEDDINGS = False
 LOAD_REDUCED_EMBEDDINGS = False
 LOAD_CLUSTER_INFO = False
-DO_OPTUNA = True
+LOAD_OPTUNA_RESULTS = False
 
 
 # Eligibility crietria embedding model parameters
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
-MAX_SELECTED_SAMPLES = 1_000_000
+MAX_SELECTED_SAMPLES = 1_000_000 if args.hpc else 200_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
-    "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
-    "bert-sentence": "efederici/sentence-bert-base",
-    "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-    "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
-    "roberta": "roberta-large",
-    "bert": "bert-large-uncased",
+    # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
+    # "bert-sentence": "efederici/sentence-bert-base",
+    # "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
+    # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
+    # "roberta": "roberta-large",
+    # "bert": "bert-large-uncased",
 }
 
 
@@ -67,12 +68,13 @@ STATUS_MAP = None  # to use raw labels
 
 
 # Clustering algorithm parameters
+N_CLUSTER_MAX = 500
 CLUSTER_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
 DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster
-N_ITER_MAX_TSNE = 100_000  # 1_000, 2_000, 10_000
+N_ITER_MAX_TSNE = 100_000 if args.hpc else 100_000
 CLUSTER_SUMMARIZATION_METHOD = "chatgpt" if args.hpc else "closest"
 
 
@@ -87,7 +89,7 @@ NA_COLOR_ALPHA = 0.1
 NOT_NA_COLOR_ALPHA = 0.8
 NA_COLOR = np.array([0.0, 0.0, 0.0, NA_COLOR_ALPHA])
 COLORS[:, -1] = NOT_NA_COLOR_ALPHA
-SCATTER_PARAMS = {"s": 50, "linewidth": 0}
+SCATTER_PARAMS = {"s": 20, "linewidth": 0}
 LEAF_SEPARATION = 0.3
 
 

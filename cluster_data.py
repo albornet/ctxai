@@ -1,7 +1,6 @@
 import os
 import ast
 import csv
-import json
 import pickle
 import glob
 import shutil
@@ -27,8 +26,8 @@ def main():
     else:
         cluster_metrics = {}
         for model_type in cfg.MODEL_STR_MAP.keys():
-            cluster_metrics[model_type] = run_one_model(model_type, input_dir)   
-            print("Done with %s" % model_type)     
+            cluster_metrics[model_type] = run_one_model(model_type, input_dir)
+            print("Done with %s" % model_type)
     plot_model_comparison(cluster_metrics)
     print("Model comparison finished!")
 
@@ -153,6 +152,7 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
                 "intervention_ids", "category", "context", "subcontext", "label"]
         assert all([c in all_column_names for c in cols])
         self.col_id = {c: all_column_names.index(c) for c in cols}
+        self.yielded_input_texts = []
         
     def __iter__(self):
         for i, sample in enumerate(self.dp):
@@ -162,7 +162,10 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
             if not ct_not_filtered: continue
             
             # Yield sample and metadata ("labels") if all is good
-            yield self._build_input_text(sample), ct_metadata
+            input_text = self._build_input_text(sample)
+            if input_text not in self.yielded_input_texts:
+                self.yielded_input_texts.append(input_text)
+                yield input_text, ct_metadata
             
     def _filter_fn(self, sample: dict[str, str]):
         """ Filter out CTs that do not belong to a given phase and condition
@@ -171,6 +174,7 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         ct_path = sample[self.col_id["ct path"]],
         ct_status = sample[self.col_id["label"]].lower()
         metadata = {"path": ct_path, "status": ct_status}
+        if cfg.RAW_INPUT_FORMAT == "dict": return metadata, True  # special case
         
         # Load relevant data
         ct_phases = ast.literal_eval(sample[self.col_id["phases"]])
@@ -296,14 +300,15 @@ def plot_model_comparison(metrics):
     """
     # aRRACH
     to_plot = ["sil_score", "db_score", "nm_score", "homogeneity", "completeness", "v_measure"]
-    def filter_fn(d: dict):
-        d = {k: v for k, v in d.items() if k in to_plot}
-        d = {k: v / 10 if k == "db" else v for k, v in d.items()}
-        return d
-    label_free_metrics = {k: filter_fn(v) for k, v in metrics["label_free"].items()}
-    label_dept_metrics = {k: filter_fn(v) for k, v in metrics["label_dept"].items()}
-    metrics = label_free_metrics.update(label_dept_metrics)
-    
+    def filter_fn(d: dict[str, dict]) -> dict:
+        d_free, d_dept = d["label_free"], d["label_dept"]
+        d_free = {k: v for k, v in d_free.items() if k in to_plot}
+        d_free = {k: v / 10 if k == "db_score" else v for k, v in d_free.items()}
+        d_dept = {k: v for k, v in d_dept.items() if k in to_plot}
+        d_free.update(d_dept)
+        return d_free
+    metrics = {k: filter_fn(v) for k, v in metrics.items()}
+        
     # Retrieve model list from the data
     labels = list(next(iter(metrics.values())).keys())
     num_models = len(metrics.keys())
@@ -327,6 +332,7 @@ def plot_model_comparison(metrics):
                 xytext=(0, 3),  # 3 points vertical offset
                 textcoords="offset points",
                 ha="center", va="bottom",
+                rotation=90,
             )
 
     # Adjustments to the plot

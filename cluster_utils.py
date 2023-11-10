@@ -5,25 +5,10 @@ import pickle
 import openai
 import numpy as np
 import torch
-import optuna
-import hdbscan 
 import matplotlib.pyplot as plt
 import cluster_config as cfg
-from optuna.samplers import TPESampler
-from collections import Counter, OrderedDict
-from itertools import zip_longest, product
-from tqdm import tqdm
-from requests.exceptions import ConnectionError
-from openai.error import (
-    RateLimitError,
-    ServiceUnavailableError,
-    Timeout,
-    APIError,
-    APIConnectionError,
-)
-from torchmetrics.clustering import DunnIndex
+import optuna
 from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
 from sklearn.metrics import (
@@ -34,6 +19,26 @@ from sklearn.metrics import (
     normalized_mutual_info_score,
     homogeneity_completeness_v_measure as hcv_measure,
 )
+from optuna.samplers import TPESampler
+from collections import Counter, OrderedDict
+from itertools import zip_longest, product
+from torchmetrics.clustering import DunnIndex
+from tqdm import tqdm
+from requests.exceptions import ConnectionError
+from openai import (
+    RateLimitError,
+    OpenAIError,
+    APIError,
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+)
+if not cfg.USE_CUML:
+    import hdbscan
+    from sklearn.manifold import TSNE
+else:
+    from cuml.cluster import hdbscan
+    from cuml.manifold import TSNE
 
 
 def report_clusters(model_type: str,
@@ -45,69 +50,94 @@ def report_clusters(model_type: str,
     """ Reduce the dimensionality of concept embeddings for different categories
         and log a scatter plot of the low-dimensional data to tensorboard
     """
-    # Reduce dimensionality of all criteria"s embeddings
-    load_path = os.path.join(cfg.OUTPUT_DIR, "reduced_embeddings_%s.pkl" % model_type)
-    if cfg.LOAD_REDUCED_EMBEDDINGS:
-        with open(load_path, "rb") as f:
-            cluster_data = pickle.load(f)
-            plot_data = cluster_data  # pickle.load(f)
-    else:
-        cluster_data, plot_data = get_reduced_data(embeddings, metadata)
-        with open(load_path, "wb") as f:
-            pickle.dump(plot_data, f)
-    
-    # Load token info, including "true" cluster labels
+    # Reduce data dimensionality and get token information
+    plot_data, cluster_data = get_plot_and_cluster_data(embeddings, model_type)
     token_info = get_token_info(plot_data, raw_txt, metadata, label_type)
     
-    # Look for best set of hyper-parameters for clustering
+    # Look for best set of hyper-parameters for clustering and cluster
     params = find_best_cluster_params(cluster_data, model_type)
+    cluster_info = cluster_criteria(params, cluster_data, token_info, model_type)
     
-    # Cluster selected criteria, based on reduced embeddings
-    load_path = os.path.join(cfg.OUTPUT_DIR, "cluster_info_%s.pkl" % model_type)
-    if cfg.LOAD_CLUSTER_INFO:
-        with open(load_path, "rb") as f:
-            cluster_info = pickle.load(f)
-    else:
-        print("Clustering %s eligibility criteria" % len(token_info["plot_data"]))
-        cluster_info = clusterize(data=cluster_data, mode="primary", params=params)
-        if cluster_info is not None and cfg.DO_SUBCLUSTERIZE:
-            cluster_info = subclusterize(cluster_info, params=params)
-        with open(load_path, "wb") as f:
-            pickle.dump(plot_data, f)
-        
     # Plot and evaluate clusters and their content
-    fig_path = os.path.join(cfg.RESULT_DIR, "plot_%s.png" % model_type)
-    plot_cluster_hierarchy(token_info, cluster_info, fig_path, red_dim=cfg.PLOT_RED_DIM)
+    plot_cluster_hierarchy(token_info, cluster_info, model_type)
     stats, texts, metrics = generate_cluster_reports(token_info, cluster_info, metadata)
     
     # Return all results
     return stats, texts, metrics
 
 
+def get_plot_and_cluster_data(embeddings: torch.Tensor,
+                              model_type: str
+                              ) -> tuple[np.ndarray, np.ndarray]:
+    """ Compute low-dimensional plot and cluster data using dimensionality
+        reduction algorithm, or load already computed results 
+    """
+    # Load already computed data
+    load_path = os.path.join(cfg.OUTPUT_DIR, "reduced_embeddings_%s.pkl" % model_type)
+    if cfg.LOAD_REDUCED_EMBEDDINGS:
+        with open(load_path, "rb") as f:
+            cluster_data = pickle.load(f)
+            plot_data = cluster_data
+    
+    # Recompute reduced dimensionality representation of data and save it
+    else:
+        cluster_data, plot_data = get_reduced_data(embeddings.numpy())
+        with open(load_path, "wb") as f:
+            pickle.dump(plot_data, f)
+    
+    # Return the results
+    return plot_data, cluster_data
+            
+
 def find_best_cluster_params(cluster_data: np.ndarray, model_type: str) -> dict:
     """ Use optuna to determine best set of cluster parameters (or load them)
     """
-    params_path = os.path.join(cfg.RESULT_DIR, "params_%s.json" % model_type)
-    
-    # Find and save best hyper-parameters
-    if cfg.DO_OPTUNA:
-        print("Looking for best clustering hyper-parameters")
-        study = optuna.create_study(sampler=TPESampler(), direction="maximize")
-        study_objective = lambda trial: objective_fn(trial, cluster_data)
-        study.optimize(study_objective, n_trials=cfg.N_OPTUNA_TRIALS)  #, n_jobs=cfg.NUM_WORKERS) <-- bad idea because each process would already use NUM_WORKERS
-        print("Best params: %s" % study.best_params)
-        with open(params_path, "w") as file:
-            json.dump(study.best_params, file, indent=4)
-        return study.best_params
-    
     # Try to load best hyper-parameters and return defaults otherwise
-    else:
+    params_path = os.path.join(cfg.RESULT_DIR, "params_%s.json" % model_type)
+    if cfg.LOAD_OPTUNA_RESULTS:
         try:
             with open(params_path, 'r') as file:
                 return json.load(file)
         except FileNotFoundError:
             print("Clustering parameters not found, using default parameters")
             return cfg.DEFAULT_CLUSTERING_PARAMS
+
+    # Find and save best hyper-parameters
+    else:
+        print("Looking for best clustering hyper-parameters")
+        study = optuna.create_study(sampler=TPESampler(), direction="maximize")
+        study_objective = lambda trial: objective_fn(trial, cluster_data)
+        study.optimize(study_objective, n_trials=cfg.N_OPTUNA_TRIALS)  #, n_jobs=cfg.NUM_WORKERS)
+        print("Best params: %s" % study.best_params)
+        with open(params_path, "w") as file:
+            json.dump(study.best_params, file, indent=4)
+        return study.best_params
+
+def cluster_criteria(params: dict,
+                     data: np.ndarray,
+                     token_info: dict,
+                     model_type: str
+                     ) -> dict:
+    """ Cluster criteria and save the results, or load cluster information from
+        a previous run, with specific model embeddings 
+    """
+    # Load already computed clustering results
+    load_path = os.path.join(cfg.OUTPUT_DIR, "cluster_info_%s.pkl" % model_type)
+    if cfg.LOAD_CLUSTER_INFO:
+        with open(load_path, "rb") as f:
+            cluster_info = pickle.load(f)
+    
+    # Run clustering algorithmm with selected hyper-parameters and save results
+    else:
+        print("Clustering %s eligibility criteria" % len(token_info["plot_data"]))
+        cluster_info = clusterize(data=data, mode="primary", params=params)
+        if cluster_info is not None and cfg.DO_SUBCLUSTERIZE:
+            cluster_info = subclusterize(cluster_info, params=params)
+        with open(load_path, "wb") as f:
+            pickle.dump(cluster_info, f)
+    
+    # Return clustering results
+    return cluster_info
 
 
 def objective_fn(trial: optuna.Trial, cluster_data: np.ndarray) -> float:
@@ -128,7 +158,7 @@ def objective_fn(trial: optuna.Trial, cluster_data: np.ndarray) -> float:
             params[name] = trial.suggest_int(name, low, high)
         else:
             raise TypeError("Boundary type mismatch")
-            
+
     # Perform clustering
     try:
         cluster_info = clusterize(data=cluster_data, mode="primary", params=params)
@@ -138,7 +168,7 @@ def objective_fn(trial: optuna.Trial, cluster_data: np.ndarray) -> float:
         cluster_info = None
     
     # Compute metric
-    if cluster_info is not None and cluster_info['n_clusters'] < 100:
+    if cluster_info is not None and cluster_info['n_clusters'] < cfg.N_CLUSTER_MAX:
         cluster_lbls = cluster_info["cluster_lbls"]
         metric_1 = silhouette_score(cluster_data, cluster_lbls)
         metric_2 = 1.0 - np.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
@@ -151,37 +181,41 @@ def objective_fn(trial: optuna.Trial, cluster_data: np.ndarray) -> float:
     return metric
 
 
-def get_reduced_data(embeddings: np.ndarray,
-                     metadata: dict,
-                     ) -> tuple[np.ndarray, np.ndarray]:
+def get_reduced_data(embeddings: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """ Reduce data using t-SNE (or PCA) and return two separate arrays, one for
         clustering and one for plotting
     """
-    print("\nReducing dim of %s eligibility criteria embeddings" % len(metadata))
+    # Compute reduced representation for clustering
+    print("\nReducing dim of %s eligibility criteria embeddings" % len(embeddings))
     cluster_data = compute_reduced_repr(
         embeddings,
         dim=cfg.CLUSTER_RED_DIM,
         algorithm=cfg.CLUSTER_DIM_RED_ALGO,
     )
+    
+    # Compute reduced representation for plotting
     if cfg.CLUSTER_RED_DIM == cfg.PLOT_RED_DIM\
     and cfg.CLUSTER_DIM_RED_ALGO == cfg.PLOT_DIM_RED_ALGO:
         plot_data = cluster_data
     else:
         plot_data = compute_reduced_repr(
-            cluster_data,  # embeddings,
+            cluster_data,  # embeddings?
             dim=cfg.PLOT_RED_DIM,
             algorithm=cfg.PLOT_DIM_RED_ALGO,
         )
+    
+    # Return the results
     return cluster_data, plot_data
 
 
-def get_token_info(plot_data, raw_txt, metadata, label_type):
-    """ Retrieve token info and filter true clusters that are too small
+def get_token_info(plot_data: np.ndarray,
+                   raw_txt: list[str],
+                   metadata: list[str],
+                   label_type: str,
+                   ) -> dict:
+    """ Wrap-up raw information about text and plotting
     """
     true_lbls = [l[label_type] for l in metadata]
-    # lbl_counts = dict(Counter(true_lbls))
-    # thresh = MIN_CLUSTER_SIZE["primary"] * len(true_lbls)
-    # true_lbls = [l if lbl_counts[l] >= thresh else -1 for l in true_lbls]
     token_info = {
         "plot_data": plot_data,
         "raw_txt": raw_txt,
@@ -191,7 +225,7 @@ def get_token_info(plot_data, raw_txt, metadata, label_type):
     }
     return token_info
 
-    
+
 def clusterize(data: np.ndarray, mode=str, params=dict) -> dict:
     """ Cluster data points with hdbscan algorithm and return cluster information
     """
@@ -199,7 +233,7 @@ def clusterize(data: np.ndarray, mode=str, params=dict) -> dict:
     cluster_params = select_cluster_params(len(data), mode, params)
     
     # Find cluster affordances based on cluster hierarchy
-    clusterer = hdbscan.HDBSCAN(**cluster_params, core_dist_n_jobs=cfg.NUM_WORKERS)
+    clusterer = hdbscan.HDBSCAN(**cluster_params)  # core_dist_n_jobs=cfg.NUM_WORKERS)
     clusterer.fit(data)
     n_clusters = clusterer.labels_.max() + 1  # -1 being ignored
     if n_clusters <= 1: return None
@@ -210,7 +244,7 @@ def clusterize(data: np.ndarray, mode=str, params=dict) -> dict:
         clusterer.labels_[unclustered_ids] = 0
     
     # Sort data points by how close they are from each cluster medoid
-    medoids = [clusterer.weighted_cluster_medoid(i) for i in range(n_clusters)]
+    medoids = compute_weighted_cluster_medoids(clusterer, n_clusters, data)
     medoid_dists = cdist(medoids, data)
     medoid_sorting = np.argsort(medoid_dists, axis=1)
     
@@ -229,6 +263,27 @@ def clusterize(data: np.ndarray, mode=str, params=dict) -> dict:
         "cluster_lbls": clusterer.labels_,
         "sorted_cluster_member_ids": medoid_closest_ids,
     }
+
+
+def compute_weighted_cluster_medoids(clusterer, n_clusters, data):
+    """ Compute cluster centroids by averaging samples within each cluster,
+        weighting by the sample probability of being in that cluster
+    """
+    cluster_medoids = []
+    for cluster_label in range(n_clusters):
+        cluster_ids = np.where(clusterer.labels_ == cluster_label)[0]
+        cluster_probs = clusterer.probabilities_[cluster_ids][0]
+        cluster_data = data[cluster_ids]
+        cluster_medoids.append(compute_medoid(cluster_probs * cluster_data))
+    return cluster_medoids
+
+
+def compute_medoid(samples: np.ndarray) -> np.ndarray:
+    """ Compute medoids of a subset of samples of shape (n_samples, n_features)
+    """
+    distance_matrix = cdist(samples, samples)
+    medoid_id = np.argmin(distance_matrix.sum(axis=0))
+    return samples[medoid_id]
 
 
 def subclusterize(cluster_info: dict, params: dict) -> dict:
@@ -271,18 +326,18 @@ def select_cluster_params(n_samples: int,
     min_samples = params["min_samples_%s" % mode]
     
     # Adapter function (int vs float)
-    def adapt_param_fn(value, min_value, factor=n_samples):
-        if isinstance(value, int): return value
-        else: return max(min_value, int(factor * value))
+    def adapt_param_fn(value, min_value):
+        if isinstance(value, float): value = int(n_samples * value)
+        return min(max(min_value, value), n_samples - 1)
     
     # Return all selected cluster parameters
     return {
         "cluster_selection_method": params["cluster_selection_method"],
         "alpha": params["alpha"],
         "allow_single_cluster": True,
-        "min_cluster_size": adapt_param_fn(min_cluster_size, 2, n_samples),
-        "max_cluster_size": adapt_param_fn(max_cluster_size, 10, n_samples),
-        "min_samples": adapt_param_fn(min_samples, 1, n_samples),
+        "max_cluster_size": adapt_param_fn(max_cluster_size, 100),
+        "min_cluster_size": adapt_param_fn(min_cluster_size, 10),
+        "min_samples": adapt_param_fn(min_samples, 10),
     }
 
 
@@ -464,8 +519,8 @@ def prompt_chatgpt(system_prompt, user_prompt, max_retries=5):
             )
             return response["choices"][0]["message"]["content"].strip()
 
-        except (RateLimitError, ServiceUnavailableError, Timeout,
-                ConnectionError, APIError, APIConnectionError) as e:
+        except (RateLimitError, ConnectionError, OpenAIError, APIError,
+                APIStatusError, APITimeoutError, APIConnectionError) as e:
             print("An error occurred: %s. Retrying in %i seconds." % (e, 2 ** i))
             time.sleep(2 ** i)
             
@@ -474,16 +529,16 @@ def prompt_chatgpt(system_prompt, user_prompt, max_retries=5):
 
 def plot_cluster_hierarchy(token_info: dict,
                            cluster_info: dict,
-                           fig_path: str,
-                           red_dim: int,
+                           model_type: str,
                            subset_ids: list[int]=None,
                            ) -> None:
     """ Plot theoretical clusters (using labels), empirical clusters (using
         hdbscan), and the empirical cluster tree
     """
     # Initialize figure and load data
+    fig_path = os.path.join(cfg.RESULT_DIR, "plot_%s.png" % model_type)
     fig = plt.figure(figsize=cfg.FIG_SIZE)
-    plot_kwargs = {} if red_dim <= 2 else {"projection": "3d"}
+    plot_kwargs = {} if cfg.PLOT_RED_DIM <= 2 else {"projection": "3d"}
     true_labels = token_info["true_lbls"]
     cluster_labels = cluster_info["cluster_lbls"]
     n_labels = len(set(true_labels))
@@ -548,7 +603,7 @@ def compute_reduced_repr(embeddings: np.ndarray,
     """ Reduce the dimensionality of high-dimensional concept embeddings
     """    
     # No dimensionality reduction
-    embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)  # ?
+    # embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)  # ?
     if dim == None or algorithm == None:
         return embeddings
     
@@ -560,17 +615,16 @@ def compute_reduced_repr(embeddings: np.ndarray,
     elif algorithm == "tsne":
         params = {
             "n_components": dim,
-            "perplexity": 30.0,  # 10.0, 30.0, 100.0
-            "learning_rate": "auto",  # or any value in [10 -> 1000] may be good
-            "n_iter": cfg.N_ITER_MAX_TSNE,  # 10000, 2000
-            "n_iter_without_progress": 1000,  # 200, 1000
-            "metric": "cosine",
-            "init": "pca",  # "pca", "random"
-            "n_jobs": cfg.NUM_WORKERS,
-            "verbose": 2,
             "method": "barnes_hut" if dim < 4 else "exact",  # "exact" very slow
+            "n_iter": cfg.N_ITER_MAX_TSNE,
+            "n_iter_without_progress": 1000,
+            "learning_rate": max(len(embeddings) / 12.0, 200),
+            "metric": "cosine",
+            "verbose": True,
+            "perplexity": 30.0,
         }
-        return TSNE(**params).fit_transform(embeddings)
+        tsne = TSNE(**params)
+        return tsne.fit_transform(embeddings)
 
 
 def dunn_index(cluster_data: np.ndarray, cluster_lbls: np.ndarray) -> float:
@@ -582,7 +636,7 @@ def dunn_index(cluster_data: np.ndarray, cluster_lbls: np.ndarray) -> float:
     
 
 def get_cluster_colors(token_info, cluster_info):
-    """ ...
+    """ Find the best match between clusters and labels to assigns colors
     """
     # Identify possible colour values
     class_lbls = token_info["true_lbls"]
