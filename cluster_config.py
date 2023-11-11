@@ -11,7 +11,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
 args = parser.parse_args()
 USE_CUML = True
-NUM_WORKERS = 40 if args.hpc else 12
+NUM_WORKERS = 12 if args.hpc else 12
 LOAD_FINAL_RESULTS = False
 LOAD_EMBEDDINGS = True
 LOAD_REDUCED_EMBEDDINGS = True
@@ -26,12 +26,12 @@ MAX_SELECTED_SAMPLES = 1_000_000 if args.hpc else 100_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
-    # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
-    # "bert-sentence": "efederici/sentence-bert-base",
-    # "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-    # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
-    # "roberta": "roberta-large",
-    # "bert": "bert-large-uncased",
+    "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
+    "bert-sentence": "efederici/sentence-bert-base",
+    "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
+    "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
+    "roberta": "roberta-large",
+    "bert": "bert-large-uncased",
 }
 
 
