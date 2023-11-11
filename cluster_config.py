@@ -13,16 +13,16 @@ args = parser.parse_args()
 USE_CUML = True
 NUM_WORKERS = 40 if args.hpc else 12
 LOAD_FINAL_RESULTS = False
-LOAD_EMBEDDINGS = False
-LOAD_REDUCED_EMBEDDINGS = False
-LOAD_CLUSTER_INFO = False
-LOAD_OPTUNA_RESULTS = False
+LOAD_EMBEDDINGS = True
+LOAD_REDUCED_EMBEDDINGS = True
+LOAD_CLUSTER_INFO = True
+LOAD_OPTUNA_RESULTS = True
 
 
 # Eligibility crietria embedding model parameters
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
-MAX_SELECTED_SAMPLES = 1_000_000 if args.hpc else 200_000
+MAX_SELECTED_SAMPLES = 1_000_000 if args.hpc else 100_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
@@ -83,7 +83,7 @@ FIG_SIZE = (11, 11)
 TEXT_SIZE = 16
 COLORS = np.array((
     list(plt.cm.tab20(np.arange(20)[0::2])) + \
-    list(plt.cm.tab20(np.arange(20)[1::2]))) * 5
+    list(plt.cm.tab20(np.arange(20)[1::2]))) * (N_CLUSTER_MAX // 20 + 1)
 )
 NA_COLOR_ALPHA = 0.1
 NOT_NA_COLOR_ALPHA = 0.8
