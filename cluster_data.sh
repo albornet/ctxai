@@ -3,10 +3,10 @@
 #SBATCH --job-name=cluster_data
 #SBATCH --partition=private-teodoro-gpu
 #SBATCH --ntasks=1
-#SBATCH --gpus-per-task=1
+#SBATCH --gpus-per-task=2
 #SBATCH --cpus-per-task=13
-#SBATCH --mem=48gb
-#SBATCH --time=2-00:00:00
+#SBATCH --mem=100gb
+#SBATCH --time=1-00:00:00
 #SBATCH --output=logs/job_%j.txt
 #SBATCH --error=logs/job_%j.err
 

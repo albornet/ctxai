@@ -1,9 +1,21 @@
 import os
 import json
-import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
+import subprocess
+import json
+
+
+def get_gpu_count():
+    """ Count the number available GPU devices based on the output of nvidia-smi
+    """
+    try:
+        output = subprocess.check_output(['nvidia-smi', '-L'], text=True)
+        gpu_count = len(output.strip().split('\n'))
+        return gpu_count
+    except subprocess.CalledProcessError:
+        return 0
 
 
 # General boolean parameters
@@ -11,27 +23,28 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
 args = parser.parse_args()
 USE_CUML = True
-NUM_WORKERS = 12 if args.hpc else 12
 LOAD_FINAL_RESULTS = False
 LOAD_EMBEDDINGS = True
 LOAD_REDUCED_EMBEDDINGS = True
-LOAD_CLUSTER_INFO = True
-LOAD_OPTUNA_RESULTS = True
+LOAD_CLUSTER_INFO = False
+LOAD_OPTUNA_RESULTS = False
+NUM_GPUS = get_gpu_count()
+NUM_PARALLEL_OPTUNA_TRIALS = 12
 
 
-# Eligibility crietria embedding model parameters
-DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+# Eligibility criteria embedding model parameters
+DEVICE = "cuda:0" if NUM_GPUS > 0 else "cpu"
 BATCH_SIZE = 64
 MAX_SELECTED_SAMPLES = 1_000_000 if args.hpc else 100_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
-    "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
-    "bert-sentence": "efederici/sentence-bert-base",
-    "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-    "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
-    "roberta": "roberta-large",
-    "bert": "bert-large-uncased",
+    # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
+    # "bert-sentence": "efederici/sentence-bert-base",
+    # "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
+    # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
+    # "roberta": "roberta-large",
+    # "bert": "bert-large-uncased",
 }
 
 
@@ -75,7 +88,7 @@ CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
 DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster
 N_ITER_MAX_TSNE = 100_000 if args.hpc else 100_000
-CLUSTER_SUMMARIZATION_METHOD = "chatgpt" if args.hpc else "closest"
+CLUSTER_SUMMARIZATION_METHOD = "closest" if args.hpc else "closest"
 
 
 # Cluster plot parameters
@@ -97,21 +110,21 @@ LEAF_SEPARATION = 0.3
 N_OPTUNA_TRIALS = 100
 OPTUNA_PARAM_RANGES = {
     "max_cluster_size_primary": [0.02, 0.1],
-    "min_cluster_size_primary": [0.0, 0.01],
-    "min_samples_primary": [0.0, 0.004],
+    "min_cluster_size_primary": [0.0007, 0.01],
+    "min_samples_primary": [0.0, 0.0007],
     "max_cluster_size_secondary": [0.3, 1.0],
-    "min_cluster_size_secondary": [0.0, 0.4],
-    "min_samples_secondary": [0.0, 0.004],
+    "min_cluster_size_secondary": [0.001, 0.4],
+    "min_samples_secondary": [0.0, 0.001],
     "alpha": [0.5, 5.0],
     "cluster_selection_method": ["eom"],
 }
 DEFAULT_CLUSTERING_PARAMS = {
-    'max_cluster_size_primary': 0.046785350806582304,
-    'min_cluster_size_primary': 0.006506556037527307,
-    'min_samples_primary': 1.1262890212484896e-05,
-    'max_cluster_size_secondary': 0.8623302183161973,
-    'min_cluster_size_secondary': 0.18352927484472079,
-    'min_samples_secondary': 0.0038758800804370368,
-    'alpha': 2.8146278364855495,
-    'cluster_selection_method': 'eom',
+    'max_cluster_size_primary': 0.059104588066699,
+    'min_cluster_size_primary': 0.004393240987952118,
+    'min_samples_primary': 0.00022394924184848854,
+    'max_cluster_size_secondary': 0.9714541246953673,
+    'min_cluster_size_secondary': 0.1735510702949971,
+    'min_samples_secondary': 0.00031720162384443566,
+    'alpha': 0.6993816357610149,
+    'cluster_selection_method': 'eom'
 }
