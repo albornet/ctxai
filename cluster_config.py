@@ -29,13 +29,14 @@ LOAD_REDUCED_EMBEDDINGS = True
 LOAD_CLUSTER_INFO = False
 LOAD_OPTUNA_RESULTS = False
 NUM_GPUS = get_gpu_count()
-NUM_PARALLEL_OPTUNA_TRIALS = 12
+NUM_PARALLEL_OPTUNA_TRIALS = 10
+# assert NUM_PARALLEL_OPTUNA_TRIALS < os.cpu_count()
 
 
 # Eligibility criteria embedding model parameters
 DEVICE = "cuda:0" if NUM_GPUS > 0 else "cpu"
 BATCH_SIZE = 64
-MAX_SELECTED_SAMPLES = 1_000_000 if args.hpc else 100_000
+MAX_SELECTED_SAMPLES = 1_000_000 if args.hpc else 1_000_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
@@ -86,7 +87,7 @@ CLUSTER_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
-DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster
+DO_SUBCLUSTERIZE = False  # if True, try to cluster further each computed cluster
 N_ITER_MAX_TSNE = 100_000 if args.hpc else 100_000
 CLUSTER_SUMMARIZATION_METHOD = "closest" if args.hpc else "closest"
 

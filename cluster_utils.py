@@ -8,18 +8,11 @@ import torch
 import matplotlib.pyplot as plt
 import cluster_config as cfg
 
+
 # Utils
 from sklearn.decomposition import PCA
 from scipy.spatial.distance import cdist
 from scipy.optimize import linear_sum_assignment
-from sklearn.metrics import (
-    silhouette_score,
-    davies_bouldin_score,
-    fowlkes_mallows_score,
-    adjusted_rand_score,
-    normalized_mutual_info_score,
-    homogeneity_completeness_v_measure as hcv_measure,
-)
 from torchmetrics.clustering import DunnIndex
 from collections import Counter, OrderedDict
 from itertools import zip_longest, product
@@ -45,13 +38,24 @@ if not cfg.USE_CUML:  # not supported yet
     import hdbscan
     from sklearn.manifold import TSNE
 else:
+    import dask
+    dask.utils.warnings.filterwarnings('ignore')
     import dask.array as da
-    from cuml.internals.array import CumlArray as CumlArrayClass
-    from distributed.client import Future as FutureArrayClass
+    from cuml.internals.array import CumlArray
     from dask_cuda import LocalCUDACluster
     from dask.distributed import LocalCluster, Client
     from cuml.manifold import TSNE
     from cuml.cluster import hdbscan
+
+# Metrics
+from cuml.metrics.cluster import (
+    silhouette_score,
+    adjusted_rand_score,  # adjuste_rand_index?
+    mutual_info_score,
+    homogeneity_score,
+    completeness_score,
+    v_measure,
+)
 
 
 def report_clusters(model_type: str,
@@ -68,6 +72,7 @@ def report_clusters(model_type: str,
     token_info = get_token_info(plot_data, raw_txt, metadata, label_type)
     
     # Look for best set of hyper-parameters for clustering and cluster
+    # cluster_data = cluster_data[:100_000]
     params = find_best_cluster_params(cluster_data, model_type)
     cluster_info = cluster_criteria(params, cluster_data, token_info, model_type)
     
@@ -165,8 +170,8 @@ def cluster_criteria(params: dict,
     else:
         print("Clustering %s eligibility criteria" % len(token_info["plot_data"]))
         cluster_info = clusterize(data=data, mode="primary", params=params)
-        # if cluster_info is not None and cfg.DO_SUBCLUSTERIZE:
-        #     cluster_info = subclusterize(cluster_info, params=params)
+        if cluster_info is not None and cfg.DO_SUBCLUSTERIZE:
+            cluster_info = subclusterize(cluster_info, params=params)
         with open(load_path, "wb") as f:
             pickle.dump(cluster_info, f)
     
@@ -191,26 +196,26 @@ def find_best_cluster_params(cluster_data: np.ndarray, model_type: str) -> dict:
     else:
         print("Looking for best clustering hyper-parameters")
         with LocalCluster(
-            n_workers=cfg.NUM_GPUS,
-            threads_per_worker=cfg.NUM_PARALLEL_OPTUNA_TRIALS // cfg.NUM_GPUS,
+            n_workers=2,  # cfg.NUM_OPTUNA_WORKERS,
+            threads_per_worker=6,  # cfg.NUM_OPTUNA_THREADS,
             processes=True,
-            device_memory_limit='22GB'
         ) as cluster:
+            print("%s created" % cluster)
             with Client(cluster, timeout='60s') as client:
                 db_path = "sqlite:///%s/optuna_%s.db" % (cfg.RESULT_DIR, model_type)
                 study = optuna.create_study(
                     sampler=TPESampler(),
                     direction="maximize",
-                    storage=DaskStorage(db_path)
+                    storage=DaskStorage(db_path),
                 )
-                cluster_data = da.from_array(cluster_data)  # dask array for GPU computations
+                cluster_data = da.from_array(cluster_data)  # for GPU computations
                 objective = lambda trial: objective_fn(trial, cluster_data)
-                futures = [
-                    client.submit(study.optimize, objective, n_trials=1, pure=False)
-                    for _ in range(cfg.N_OPTUNA_TRIALS)
-                ]
+                futures = client.map(
+                    lambda _: study.optimize(objective, n_trials=1),
+                    range(cfg.N_OPTUNA_TRIALS),
+                    pure=False,
+                )
                 client.gather(futures)
-                # study.optimize(objective, n_trials=cfg.N_OPTUNA_TRIALS, n_jobs=-1)
                 best_params = study.best_params
                 
         print("Best params: %s" % best_params)
@@ -219,23 +224,32 @@ def find_best_cluster_params(cluster_data: np.ndarray, model_type: str) -> dict:
         return best_params
 
 
-def objective_fn(trial: optuna.Trial, data: np.ndarray) -> float:
+def objective_fn(trial: optuna.Trial, data: da) -> float:
     """ Suggest a new set of hyper-parameters and compute associated metric
     """
     # Perform clustering with a new set of suggested parameters
+    t0 = time.time()
     params = suggest_parameters(trial)  # if isinstance(data, FutureArrayClass): data = data.result()
     cluster_info = clusterize(data=data, mode="primary", params=params)
     # if cluster_info['n_clusters'] > 1 and cfg.DO_SUBCLUSTERIZE:
     #     cluster_info = subclusterize(cluster_info, params=params)
     
+    t1 = time.time()
+    print("Trial %s - Found %s clusters in %s seconds" %\
+        (trial.number, cluster_info["n_clusters"], t1 - t0))
+    
     # Compute metric with clustering results
-    if 1 < cluster_info['n_clusters'] < cfg.N_CLUSTER_MAX:
-        cluster_lbls = cluster_info["cluster_lbls"]
-        metric_1 = silhouette_score(data, cluster_lbls)
+    if 1 < cluster_info["n_clusters"] < cfg.N_CLUSTER_MAX:
+        cluster_lbls = da.array(cluster_info["cluster_lbls"])  # I try this
+        metric_1 = silhouette_score(data, cluster_lbls, chunksize=10_000)
         metric_2 = 1.0 - np.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
         metric = metric_1 + metric_2
     else:
         metric = float("-inf")
+    
+    t2 = time.time()
+    print("Trial %s - Got %.3f metric in %s seconds" %\
+        (trial.number, metric, t2 - t1))
     
     # Return metric
     return metric
@@ -287,7 +301,7 @@ def set_cluster_params(n_samples: int, mode: str, params: dict) -> dict:
     }
 
 
-def clusterize(data: np.ndarray, mode: str, params: dict) -> dict:
+def clusterize(data: da, mode: str, params: dict) -> dict:
     """ Cluster data points with hdbscan algorithm and return cluster information
     """
     # Identify best cluster parameters given the data and cluster mode
@@ -296,33 +310,28 @@ def clusterize(data: np.ndarray, mode: str, params: dict) -> dict:
     # Find cluster affordances based on cluster hierarchy
     clusterer = hdbscan.HDBSCAN(**cluster_params)
     clusterer.fit(data)
-    os.system("nvidia-smi")
     lbls = clusterer.labels_
-    if isinstance(lbls, CumlArrayClass): lbls = lbls.to_host_array()
-    n_clusters = lbls.max() + 1  # -1 being ignored
+    if isinstance(lbls, CumlArray): lbls = lbls.to_host_array()
+    n_clusters = np.max(lbls) + 1  # -1 being ignored
     
     # Put back unclustered samples if secondary mode
     if mode == "secondary":
-        unclustered_ids = np.where(lbls == -1)
-        lbls[unclustered_ids] = 0
-
-    # Find global ids of all members of each cluster
-    cluster_member_ids = {k: np.where(lbls == k)[0] for k in range(-1, n_clusters)}
-    
+        lbls[np.where(lbls == -1)] = 0
+        
     # Return cluster info
     return {
         "clusterer": clusterer,
         "n_clusters": n_clusters,
         "cluster_data": data,
         "cluster_lbls": lbls,
-        "cluster_member_ids": cluster_member_ids,
     }
     
     
 def subclusterize(cluster_info: dict, params: dict) -> dict:
     """ Update cluster results by trying to subcluster any computed cluster
-    """
+    """    
     # For each cluster, try to cluster it further with new hdbscan parameters
+    cluster_membmer_ids = retrieve_cluster_member_ids(cluster_info)
     for cluster_id in range(cluster_info["n_clusters"]):  # not range(-1, ...)
         subset_ids = np.where(cluster_info["cluster_lbls"] == cluster_id)[0]
         subset_data = cluster_info["cluster_data"][subset_ids]
@@ -345,6 +354,14 @@ def subclusterize(cluster_info: dict, params: dict) -> dict:
     
     # Return updated cluster info
     return cluster_info
+
+
+def retrieve_cluster_member_ids(cluster_info: dict):
+    """ Retrieve the list of all sample ids that belong to each cluster
+    """
+    n_clusters = cluster_info["n_clusters"]
+    lbls = cluster_info["cluster_lbls"]
+    return {k: np.where(lbls == k)[0] for k in range(-1, n_clusters)}
 
 
 def generate_cluster_reports(token_info, cluster_info, metadata):
@@ -403,11 +420,12 @@ def compute_cluster_statistics(token_info, cluster_info):
     ]
     
     # Sort cluster member ids by how close each member is to its cluster medoid
+    cluster_member_ids = retrieve_cluster_member_ids(cluster_info)
     medoids = compute_weighted_cluster_medoids(cluster_info)
     dist_fn = lambda k, v: cdist([medoids[k]], cluster_info["cluster_data"][v])[0]
     sorted_member_ids = {
         k: [sorted_id for _, sorted_id in sorted(zip(dist_fn(k, v), v))]
-        for k, v in cluster_info["cluster_member_ids"].items()  # pas ouf clair
+        for k, v in cluster_member_ids.items()  # pas ouf clair
     }
     
     # Return computed statistics
@@ -747,20 +765,17 @@ def evaluate_clustering(cluster_info, metadata):
     
     # Evaluate clustering quality (label-free)
     cluster_metrics["label_free"] = {
-        "sil_score": silhouette_score(cluster_data, cluster_lbls),
-        "db_score": davies_bouldin_score(cluster_data, cluster_lbls),
+        "sil_score": silhouette_score(cluster_data, cluster_lbls, chunksize=10_000),
         "dunn_score": dunn_index(cluster_data, cluster_lbls),
     }
     
     # Evaluate clustering quality (label-dependent)
-    h, c, v = hcv_measure(dupl_true_lbls, dupl_cluster_lbls)
     cluster_metrics["label_dept"] = {
         "ar_score": adjusted_rand_score(dupl_true_lbls, dupl_cluster_lbls),
-        "nm_score": normalized_mutual_info_score(dupl_true_lbls, dupl_cluster_lbls),
-        "fm_score": fowlkes_mallows_score(dupl_true_lbls, dupl_cluster_lbls),
-        "homogeneity": h,
-        "completeness": c,
-        "v_measure": v,
+        "nm_score": mutual_info_score(dupl_true_lbls, dupl_cluster_lbls),
+        "homogeneity": homogeneity_score(dupl_true_lbls, dupl_cluster_lbls),
+        "completeness": completeness_score(dupl_true_lbls, dupl_cluster_lbls),
+        "v_measure": v_measure(dupl_true_lbls, dupl_cluster_lbls),
     }
     
     # Return all metrics and some info
