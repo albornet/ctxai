@@ -7,6 +7,8 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import cluster_config as cfg
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
 # Utils
@@ -196,8 +198,8 @@ def find_best_cluster_params(cluster_data: np.ndarray, model_type: str) -> dict:
     else:
         print("Looking for best clustering hyper-parameters")
         with LocalCluster(
-            n_workers=2,  # cfg.NUM_OPTUNA_WORKERS,
-            threads_per_worker=6,  # cfg.NUM_OPTUNA_THREADS,
+            n_workers=cfg.NUM_OPTUNA_WORKERS,
+            threads_per_worker=cfg.NUM_OPTUNA_THREADS,
             processes=True,
         ) as cluster:
             print("%s created" % cluster)

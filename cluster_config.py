@@ -29,8 +29,8 @@ LOAD_REDUCED_EMBEDDINGS = True
 LOAD_CLUSTER_INFO = False
 LOAD_OPTUNA_RESULTS = False
 NUM_GPUS = get_gpu_count()
-NUM_PARALLEL_OPTUNA_TRIALS = 10
-# assert NUM_PARALLEL_OPTUNA_TRIALS < os.cpu_count()
+NUM_OPTUNA_WORKERS = 3
+NUM_OPTUNA_THREADS = 3
 
 
 # Eligibility criteria embedding model parameters
