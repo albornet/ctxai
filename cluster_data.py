@@ -39,7 +39,7 @@ def run_one_model(model_type: str, input_dir: str) -> dict:
     if not cfg.LOAD_EMBEDDINGS:
         model, tokenizer, pooling_fn = get_model_pipeline(model_type)
         ds = get_dataset(input_dir, tokenizer)
-        rs = MultiProcessingReadingService(num_workers=1)  # NUM_WORKERS) <-- buggy on hpc, for some reason, and not so impactful on performance
+        rs = MultiProcessingReadingService(num_workers=1)
         dl = DataLoader2(ds, reading_service=rs)
     
     # Populate tensor with eligibility criteria embeddings
@@ -72,9 +72,11 @@ def run_one_model(model_type: str, input_dir: str) -> dict:
     
     # Generate csv report from raw text results
     stat_path = os.path.join(cfg.RESULT_DIR, "stat_%s.csv" % model_type)
+    with open(stat_path, "w", encoding="utf-8", newline="") as file:
+        csv.writer(file).writerows(stats)
     text_path = os.path.join(cfg.RESULT_DIR, "text_%s.csv" % model_type)
-    with open(stat_path, "w", newline="") as file: csv.writer(file).writerows(stats)
-    with open(text_path, "w", newline="") as file: csv.writer(file).writerows(texts)
+    with open(text_path, "w", encoding="utf-8", newline="") as file:
+        csv.writer(file).writerows(texts)
     
     # Return metrics for this model
     return metrics

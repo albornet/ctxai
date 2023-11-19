@@ -24,13 +24,13 @@ parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
 args = parser.parse_args()
 USE_CUML = True
 LOAD_FINAL_RESULTS = False
-LOAD_EMBEDDINGS = True
-LOAD_REDUCED_EMBEDDINGS = True
-LOAD_CLUSTER_INFO = False
+LOAD_EMBEDDINGS = False
+LOAD_REDUCED_EMBEDDINGS = False
 LOAD_OPTUNA_RESULTS = False
+LOAD_CLUSTER_INFO = False
 NUM_GPUS = get_gpu_count()
-NUM_OPTUNA_WORKERS = 3
-NUM_OPTUNA_THREADS = 3
+NUM_OPTUNA_WORKERS = 1
+NUM_OPTUNA_THREADS = 1
 
 
 # Eligibility criteria embedding model parameters
@@ -40,12 +40,12 @@ MAX_SELECTED_SAMPLES = 1_000_000 if args.hpc else 1_000_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
-    # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
-    # "bert-sentence": "efederici/sentence-bert-base",
-    # "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-    # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
-    # "roberta": "roberta-large",
-    # "bert": "bert-large-uncased",
+    "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
+    "bert-sentence": "efederici/sentence-bert-base",
+    "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
+    "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
+    "roberta": "roberta-large",
+    "bert": "bert-large-uncased",
 }
 
 
@@ -81,34 +81,16 @@ CHOSEN_ITRV_LVL = 3
 STATUS_MAP = None  # to use raw labels
 
 
-# Clustering algorithm parameters
+# Clustering algorithm and hyper-optimization (optuna) parameters
+N_OPTUNA_TRIALS = 100
 N_CLUSTER_MAX = 500
 CLUSTER_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
-DO_SUBCLUSTERIZE = False  # if True, try to cluster further each computed cluster
+DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster
 N_ITER_MAX_TSNE = 100_000 if args.hpc else 100_000
 CLUSTER_SUMMARIZATION_METHOD = "closest" if args.hpc else "closest"
-
-
-# Cluster plot parameters
-FIG_SIZE = (11, 11)
-TEXT_SIZE = 16
-COLORS = np.array((
-    list(plt.cm.tab20(np.arange(20)[0::2])) + \
-    list(plt.cm.tab20(np.arange(20)[1::2]))) * (N_CLUSTER_MAX // 20 + 1)
-)
-NA_COLOR_ALPHA = 0.1
-NOT_NA_COLOR_ALPHA = 0.8
-NA_COLOR = np.array([0.0, 0.0, 0.0, NA_COLOR_ALPHA])
-COLORS[:, -1] = NOT_NA_COLOR_ALPHA
-SCATTER_PARAMS = {"s": 20, "linewidth": 0}
-LEAF_SEPARATION = 0.3
-
-
-# Cluster algorithm hyper-optimization parameters (optuna)
-N_OPTUNA_TRIALS = 100
 OPTUNA_PARAM_RANGES = {
     "max_cluster_size_primary": [0.02, 0.1],
     "min_cluster_size_primary": [0.0007, 0.01],
@@ -129,3 +111,18 @@ DEFAULT_CLUSTERING_PARAMS = {
     'alpha': 0.6993816357610149,
     'cluster_selection_method': 'eom'
 }
+
+
+# Cluster plot parameters
+FIG_SIZE = (11, 11)
+TEXT_SIZE = 16
+COLORS = np.array((
+    list(plt.cm.tab20(np.arange(20)[0::2])) + \
+    list(plt.cm.tab20(np.arange(20)[1::2]))) * (N_CLUSTER_MAX // 20 + 1)
+)
+NA_COLOR_ALPHA = 0.1
+NOT_NA_COLOR_ALPHA = 0.8
+NA_COLOR = np.array([0.0, 0.0, 0.0, NA_COLOR_ALPHA])
+COLORS[:, -1] = NOT_NA_COLOR_ALPHA
+SCATTER_PARAMS = {"s": 0.33, "linewidth": 0}
+LEAF_SEPARATION = 0.3
