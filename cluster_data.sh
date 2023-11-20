@@ -4,9 +4,9 @@
 #SBATCH --partition=private-teodoro-gpu
 #SBATCH --ntasks=1
 #SBATCH --gpus-per-task=1
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=64gb
-#SBATCH --time=0-06:00:00
+#SBATCH --time=0-01:00:00
 #SBATCH --output=logs/job_%j.txt
 #SBATCH --error=logs/job_%j.err
 

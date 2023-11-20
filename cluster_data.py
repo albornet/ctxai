@@ -4,6 +4,7 @@ import csv
 import pickle
 import glob
 import shutil
+import logging
 import numpy as np
 import pandas as pd
 import torch
@@ -27,10 +28,9 @@ def main():
         cluster_metrics = {}
         for model_type in cfg.MODEL_STR_MAP.keys():
             cluster_metrics[model_type] = run_one_model(model_type, input_dir)
-            print("Done with %s" % model_type)
-            clean_cpu_and_gpu_memory()
+            logging.info("Done with %s" % model_type)
     plot_model_comparison(cluster_metrics)
-    print("Model comparison finished!")
+    logging.info("Model comparison finished!")
 
 
 def run_one_model(model_type: str, input_dir: str) -> dict:
@@ -427,7 +427,7 @@ def split_csv_for_multiprocessing(input_dir, num_workers):
     os.makedirs(output_dir, exist_ok=True)
     
     # Split the big file into smaller pieces
-    print("Loading csv file for multiprocessing split")
+    logging.info("Loading csv file for multiprocessing split")
     csv_path = csv_files[0]
     csv_name = os.path.split(csv_path)[-1]
     df = pd.read_csv(csv_path)

@@ -24,28 +24,28 @@ parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
 args = parser.parse_args()
 USE_CUML = True
 LOAD_FINAL_RESULTS = False
-LOAD_EMBEDDINGS = False
-LOAD_REDUCED_EMBEDDINGS = False
+LOAD_EMBEDDINGS = True
+LOAD_REDUCED_EMBEDDINGS = True
 LOAD_OPTUNA_RESULTS = False
 LOAD_CLUSTER_INFO = False
 NUM_GPUS = get_gpu_count()
 NUM_OPTUNA_WORKERS = 1
-NUM_OPTUNA_THREADS = 1
+NUM_OPTUNA_THREADS = 4
 
 
 # Eligibility criteria embedding model parameters
 DEVICE = "cuda:0" if NUM_GPUS > 0 else "cpu"
-BATCH_SIZE = 64
+BATCH_SIZE = 256 if args.hpc else 64
 MAX_SELECTED_SAMPLES = 1_000_000 if args.hpc else 1_000_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
-    "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
-    "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
+    # "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
+    # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
     "bert-sentence": "efederici/sentence-bert-base",
-    "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-    "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
-    "roberta": "roberta-large",
-    "bert": "bert-large-uncased",
+    # "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
+    # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
+    # "roberta": "roberta-large",
+    # "bert": "bert-large-uncased",
 }
 
 
@@ -82,14 +82,14 @@ STATUS_MAP = None  # to use raw labels
 
 
 # Clustering algorithm and hyper-optimization (optuna) parameters
-N_OPTUNA_TRIALS = 100
+N_OPTUNA_TRIALS = 20
 N_CLUSTER_MAX = 500
 CLUSTER_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
 DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster
-N_ITER_MAX_TSNE = 100_000 if args.hpc else 100_000
+N_ITER_MAX_TSNE = 10_000 if args.hpc else 10_000
 CLUSTER_SUMMARIZATION_METHOD = "closest" if args.hpc else "closest"
 OPTUNA_PARAM_RANGES = {
     "max_cluster_size_primary": [0.02, 0.1],

@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import cluster_config as cfg
+import logging
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -131,7 +132,7 @@ def get_reduced_data(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         clustering and one for plotting
     """
     # Compute reduced representation for clustering
-    print("\nReducing dim of %s eligibility criteria embeddings" % len(data))
+    logging.info("\nReducing dim of %s eligibility criteria embeddings" % len(data))
     cluster_data = compute_reduced_repr(
         data,
         dim=cfg.CLUSTER_RED_DIM,
@@ -153,7 +154,7 @@ def get_reduced_data(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return cluster_data, plot_data
 
 
-def compute_reduced_repr(embeddings: np.ndarray,
+def compute_reduced_repr(data: np.ndarray,
                          dim: int,
                          algorithm: str,
                          ) -> np.ndarray:
@@ -161,11 +162,11 @@ def compute_reduced_repr(embeddings: np.ndarray,
     """
     # No dimensionality reduction
     if dim == None or algorithm == None:
-        return embeddings
+        return data
     
     # Simple PCA algorithm
     if algorithm == "pca":
-        return PCA().fit_transform(embeddings)[:, :dim]
+        return PCA().fit_transform(data)[:, :dim]
     
     # More computationally costly t-SNE algorithm
     elif algorithm == "tsne":
@@ -174,13 +175,13 @@ def compute_reduced_repr(embeddings: np.ndarray,
             "method": "barnes_hut" if dim < 4 else "exact",  # "exact" very slow
             "n_iter": cfg.N_ITER_MAX_TSNE,
             "n_iter_without_progress": 1000,
-            "learning_rate": max(len(embeddings) / 12.0, 200),
+            "learning_rate": 200,  # max(len(data) / 12.0, 200),
             "metric": "cosine",
-            "verbose": True,
+            # "verbose": True,
             "perplexity": 30.0,
         }
         tsne = TSNE(**params)
-        return tsne.fit_transform(embeddings)
+        return tsne.fit_transform(data)
 
 
 def cluster_criteria(params: dict,
@@ -199,7 +200,7 @@ def cluster_criteria(params: dict,
     
     # Run clustering algorithm with selected hyper-parameters and save results
     else:
-        print("Clustering %s eligibility criteria" % len(token_info["plot_data"]))
+        logging.info("Clustering %s eligibility criteria" % len(token_info["plot_data"]))
         data = cp.asarray(data)  # for GPU computations
         cluster_info = clusterize(data=data, mode="primary", params=params)
         if cluster_info is not None and cfg.DO_SUBCLUSTERIZE:
@@ -221,19 +222,19 @@ def find_best_cluster_params(data: np.ndarray, model_type: str) -> dict:
             with open(params_path, 'r') as file:
                 return json.load(file)
         except FileNotFoundError:
-            print("Clustering parameters not found, using default parameters")
+            logging.warning("Clustering parameters not found, using default parameters")
             return cfg.DEFAULT_CLUSTERING_PARAMS
 
     # Find and save best hyper-parameters
     else:
-        print("Looking for best clustering hyper-parameters")
+        logging.info("Looking for best clustering hyper-parameters")
         with LocalCluster(
             n_workers=cfg.NUM_OPTUNA_WORKERS,
             threads_per_worker=cfg.NUM_OPTUNA_THREADS,
             processes=True,
         ) as cluster:
-            print("%s created" % cluster)
-            with Client(cluster, timeout='60s') as client:
+            logging.info("%s created" % cluster)
+            with Client(cluster, timeout='120s') as client:
                 data = cp.asarray(data)  # for GPU computations
                 db_path = "sqlite:///%s/optuna_%s.db" % (cfg.RESULT_DIR, model_type)
                 study = optuna.create_study(
@@ -245,11 +246,12 @@ def find_best_cluster_params(data: np.ndarray, model_type: str) -> dict:
                 study.optimize(objective, n_trials=cfg.N_OPTUNA_TRIALS)
                 best_params = study.best_params
                 
-        print("Best params: %s" % best_params)
+        logging.info("Best params: %s" % best_params)
         with open(params_path, "w") as file:
             json.dump(best_params, file, indent=4)
-        del study
-        clean_cpu_and_gpu_memory()
+        # del study
+        # clean_cpu_and_gpu_memory()
+        # time.sleep(10)  # chill out a bit
         return best_params
 
 
@@ -257,33 +259,25 @@ def objective_fn(trial: optuna.Trial, data: cp.ndarray) -> float:
     """ Suggest a new set of hyper-parameters and compute associated metric
     """
     # Perform clustering with a new set of suggested parameters
-    t0 = time.time()
     params = suggest_parameters(trial)  # if isinstance(data, FutureArrayClass): data = data.result()
-    cluster_info = clusterize(data=data, mode="primary", params=params)
-    if cluster_info['n_clusters'] > 1 and cfg.DO_SUBCLUSTERIZE:
-        cluster_info = subclusterize(cluster_info, params=params)
-    
-    t1 = time.time()
-    print("Trial %s - Found %s clusters in %i seconds" %\
-        (trial.number, cluster_info["n_clusters"], t1 - t0))
+    try:
+        cluster_info = clusterize(data=data, mode="primary", params=params)
+        if cluster_info['n_clusters'] > 1 and cfg.DO_SUBCLUSTERIZE:
+            cluster_info = subclusterize(cluster_info, params=params)
+    except Exception:
+        logging.error("Error during clustering. Skipping to next trial.")
+        return float("-inf")
     
     # Compute metric with clustering results
     if 1 < cluster_info["n_clusters"] < cfg.N_CLUSTER_MAX:
         cluster_lbls = cp.array(cluster_info["cluster_lbls"])
         metric_1 = silhouette_score(data, cluster_lbls, chunksize=20_000)
         metric_2 = 1.0 - cp.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
-        metric = metric_1 + metric_2
+        return metric_1 + metric_2
     else:
-        metric = float("-inf")
+        return float("-inf")
     
-    t2 = time.time()
-    print("Trial %s - Got %.3f metric in %i seconds" %\
-        (trial.number, metric, t2 - t1))
     
-    # Return metric
-    return metric
-
-
 def suggest_parameters(trial):
     """ Suggest parameters following configured parameter ranges and types
     """
@@ -613,7 +607,7 @@ def prompt_chatgpt(system_prompt, user_prompt, max_retries=5):
 
         except (RateLimitError, ConnectionError, OpenAIError, APIError,
                 APIStatusError, APITimeoutError, APIConnectionError) as e:
-            print("An error occurred: %s. Retrying in %i seconds." % (e, 2 ** i))
+            logging.error("An error occurred: %s. Retrying in %i seconds." % (e, 2 ** i))
             time.sleep(2 ** i)
             
     return "No response, open-ai reached rate limit or another network issue occurred."
@@ -635,7 +629,7 @@ def plot_cluster_hierarchy(token_info: dict,
     cluster_lbls = cluster_info["cluster_lbls"]
     n_labels = len(set(true_lbls))
     n_clusters = cluster_info["n_clusters"]
-    print("Plotting %s criteria embeddings" % len(true_lbls))
+    logging.info("Plotting %s criteria embeddings" % len(true_lbls))
     
     # Retrieve relevant data
     cluster_colors, class_colors = get_cluster_colors(true_lbls, cluster_lbls)
@@ -645,7 +639,6 @@ def plot_cluster_hierarchy(token_info: dict,
         class_colors = [class_colors[i] for i in subset_ids[0]]
         
     # Visualize empirical clusters
-    print("Visualizing empirical clusters")
     ax1 = fig.add_subplot(2, 2, 1, **plot_kwargs)
     ax1.scatter(*plot_data.T, c=cluster_colors, **cfg.SCATTER_PARAMS)
     ax1.set_xticklabels([]); ax1.set_yticklabels([])
@@ -653,7 +646,6 @@ def plot_cluster_hierarchy(token_info: dict,
     ax1.set_title("Data and %s clusters" % n_clusters, fontsize=cfg.TEXT_SIZE)
     
     # Visualize empirical clusters (but only the samples with an assigned cluster)
-    print("Visualizing empirical clusters without unassigned samples")
     cluster_only_indices = cp.where(cluster_lbls > -1)[0].get()
     clustered_data = plot_data[cluster_only_indices]
     clustered_colors = [cluster_colors[i] for i in cluster_only_indices]    
@@ -664,7 +656,6 @@ def plot_cluster_hierarchy(token_info: dict,
     ax2.set_title("Data and %s assigned clusters" % (n_clusters), fontsize=cfg.TEXT_SIZE)
     
     # Visualize theoretical clusters (using, e.g., ICD10-CM code hierarchy)
-    print("Visualizing theoretical clusters")
     ax3 = fig.add_subplot(2, 2, 3, **plot_kwargs)
     ax3.scatter(*plot_data.T, c=class_colors, **cfg.SCATTER_PARAMS)
     ax3.set_xticklabels([]); ax3.set_yticklabels([])
@@ -672,7 +663,6 @@ def plot_cluster_hierarchy(token_info: dict,
     ax3.set_title("Data and %s labels" % n_labels, fontsize=cfg.TEXT_SIZE)
     
     # Visualize empirical cluster tree
-    print("Visualizing empirical cluster tree")
     if hasattr(cluster_info["clusterer"], "condensed_tree_"):
         ax4 = fig.add_subplot(2, 2, 4)
         cluster_info["clusterer"].condensed_tree_.plot(
@@ -687,7 +677,6 @@ def plot_cluster_hierarchy(token_info: dict,
         ax4.spines["bottom"].set_visible(True)
     
     # Save figure
-    print("Saving figure")
     plt.tight_layout()
     plt.savefig(fig_path, dpi=600)
     plt.close()
@@ -815,29 +804,3 @@ def clean_cpu_and_gpu_memory():
     gc.collect()
     cuda.select_device(0)
     cuda.close()
-
-
-
-# [D] [14:05:17.421780] /opt/conda/conda-bld/work/python/_skbuild/linux-x86_64-3.10/cmake-build/cuml/internals/logger.cxx:5234 Expected column ('F') major order but got something else. Converting data; this will result in additional memory utilization.
-# [D] [14:05:17.424331] /opt/conda/conda-bld/work/python/_skbuild/linux-x86_64-3.10/cmake-build/cuml/internals/logger.cxx:5234 extern "C" __global__
-# void map_labels_kernel_int
-# (int *x, int x_n, int *labels, int n_labels) {
-
-#   int tid = blockDim.x * blockIdx.x + threadIdx.x;
-
-#   extern __shared__ int label_cache[];
-#   for(int i = threadIdx.x; i < n_labels; i+=blockDim.x)
-#     label_cache[i] = labels[i];
-
-#   if(tid >= x_n) return;
-#   __syncthreads();
-
-#   int unmapped_label = x[tid];
-#   for(int i = 0; i < n_labels; i++) {
-#     if(label_cache[i] == unmapped_label) {
-#       x[tid] = i;
-#       return;
-#     }
-#   }
-#   x[tid] = n_labels+1;
-# }
