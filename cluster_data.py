@@ -15,7 +15,7 @@ from torchdata.datapipes import functional_datapipe
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
 from transformers import AutoModel, AutoTokenizer
 from collections import Counter
-from cluster_utils import report_clusters
+from cluster_utils import report_clusters, clean_cpu_and_gpu_memory
 
 
 def main():
@@ -28,6 +28,7 @@ def main():
         for model_type in cfg.MODEL_STR_MAP.keys():
             cluster_metrics[model_type] = run_one_model(model_type, input_dir)
             print("Done with %s" % model_type)
+            clean_cpu_and_gpu_memory()
     plot_model_comparison(cluster_metrics)
     print("Model comparison finished!")
 
@@ -441,7 +442,7 @@ def split_csv_for_multiprocessing(input_dir, num_workers):
     # Return updated directory
     return output_dir
 
-        
+
 if __name__ == "__main__":
     main()
     

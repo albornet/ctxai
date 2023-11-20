@@ -35,10 +35,12 @@ from openai import (
 import optuna
 from optuna.integration.dask import DaskStorage
 from optuna.samplers import TPESampler
-import dask
+import gc
 import cupy as cp
+import dask
 import dask.array as da
 dask.utils.warnings.filterwarnings('ignore')
+from numba import cuda
 from cuml.internals.array import CumlArray
 from dask_cuda import LocalCUDACluster
 from dask.distributed import LocalCluster, Client
@@ -246,6 +248,8 @@ def find_best_cluster_params(data: np.ndarray, model_type: str) -> dict:
         print("Best params: %s" % best_params)
         with open(params_path, "w") as file:
             json.dump(best_params, file, indent=4)
+        del study
+        clean_cpu_and_gpu_memory()
         return best_params
 
 
@@ -266,7 +270,7 @@ def objective_fn(trial: optuna.Trial, data: cp.ndarray) -> float:
     # Compute metric with clustering results
     if 1 < cluster_info["n_clusters"] < cfg.N_CLUSTER_MAX:
         cluster_lbls = cp.array(cluster_info["cluster_lbls"])
-        metric_1 = silhouette_score(data, cluster_lbls, chunksize=30_000)
+        metric_1 = silhouette_score(data, cluster_lbls, chunksize=20_000)
         metric_2 = 1.0 - cp.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
         metric = metric_1 + metric_2
     else:
@@ -749,7 +753,7 @@ def evaluate_clustering(cluster_info, metadata):
     
     # Evaluate clustering quality (label-free)
     cluster_metrics["label_free"] = {
-        "sil_score": silhouette_score(cluster_data, cluster_lbls, chunksize=30_000),
+        "sil_score": silhouette_score(cluster_data, cluster_lbls, chunksize=20_000),
         "dunn_score": dunn_index(cluster_data, cluster_lbls),
     }
     
@@ -805,6 +809,12 @@ def dunn_index(cluster_data: cp.ndarray, cluster_lbls: cp.ndarray) -> float:
 
 
 
+def clean_cpu_and_gpu_memory():
+    """ Try to remove unused variables in GPU and CPU, after each model run
+    """
+    gc.collect()
+    cuda.select_device(0)
+    cuda.close()
 
 
 
