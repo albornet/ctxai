@@ -16,10 +16,17 @@ from torchdata.datapipes import functional_datapipe
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
 from transformers import AutoModel, AutoTokenizer
 from collections import Counter
-from cluster_utils import report_clusters, clean_cpu_and_gpu_memory
+from cluster_utils import report_clusters
 
 
 def main():
+    # Set logging level and format
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(levelname).1s %(asctime)s] %(message)s",
+    )
+    
+    # Load results if required (e.g., just to re-plot results)
     input_dir = cfg.INPUT_DIR  # split_csv_for_multiprocessing(INPUT_DIR, NUM_WORKERS)
     if cfg.LOAD_FINAL_RESULTS:
         with open(os.path.join(cfg.RESULT_DIR, "model_comparison.pkl"), "rb") as f:
@@ -47,7 +54,7 @@ def run_one_model(model_type: str, input_dir: str) -> dict:
     if not cfg.LOAD_EMBEDDINGS:
         raw_txts, metadatas = [], []
         embeddings = torch.empty((0, model.config.hidden_size))
-        data_loop = tqdm(enumerate(dl), total=cfg.NUM_STEPS, leave=False)
+        data_loop = tqdm(enumerate(dl), total=cfg.NUM_STEPS, leave=False, smoothing=0.1)
         for i, (encoded, raw_txt, metadata) in data_loop:
             # Compute embeddings for this batch
             encoded = {k: v.to(cfg.DEVICE) for k, v in encoded.items()}
@@ -302,7 +309,8 @@ def plot_model_comparison(metrics):
         produce good clusters
     """
     # aRRACH
-    to_plot = ["sil_score", "db_score", "nm_score", "homogeneity", "completeness", "v_measure"]
+    to_plot = ["sil_score", "dunn_score", "ar_score", "nm_score",
+               "homogeneity", "completeness", "v_measure"]
     def filter_fn(d: dict[str, dict]) -> dict:
         d_free, d_dept = d["label_free"], d["label_dept"]
         d_free = {k: v for k, v in d_free.items() if k in to_plot}

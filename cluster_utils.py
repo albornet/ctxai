@@ -8,9 +8,6 @@ import torch
 import matplotlib.pyplot as plt
 import cluster_config as cfg
 import logging
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
-
 
 # Utils
 from cupyx.scipy.spatial.distance import cdist as cupy_cdist
@@ -36,13 +33,7 @@ from openai import (
 import optuna
 from optuna.integration.dask import DaskStorage
 from optuna.samplers import TPESampler
-import gc
-import cupy as cp
-import dask
 import dask.array as da
-dask.utils.warnings.filterwarnings('ignore')
-from numba import cuda
-from cuml.internals.array import CumlArray
 from dask_cuda import LocalCUDACluster
 from dask.distributed import LocalCluster, Client
 from cuml.decomposition import PCA
@@ -58,6 +49,11 @@ from cuml.metrics.cluster import (
     homogeneity_score,
     completeness_score,
 )
+
+# # Warnings
+# import warnings
+# warnings.filterwarnings("ignore", category=UserWarning)
+# dask.utils.warnings.filterwarnings('ignore')
 
 
 def report_clusters(model_type: str,
@@ -78,14 +74,14 @@ def report_clusters(model_type: str,
     cluster_info = cluster_criteria(params, cluster_data, token_info, model_type)
     
     # Plot and evaluate clusters and their content
-    plot_cluster_hierarchy(token_info, cluster_info, model_type)
+    # plot_cluster_hierarchy(token_info, cluster_info, model_type)
     stats, texts, metrics = generate_cluster_reports(token_info, cluster_info, metadata)
     
     # Return all results
     return stats, texts, metrics
 
 
-def get_token_info(plot_data: cp.ndarray,
+def get_token_info(plot_data: np.ndarray,
                    raw_txt: list[str],
                    metadata: list[str],
                    label_type: str,
@@ -105,7 +101,7 @@ def get_token_info(plot_data: cp.ndarray,
 
 def get_plot_and_cluster_data(embeddings: torch.Tensor,
                               model_type: str,
-                              ) -> tuple[cp.ndarray, cp.ndarray]:
+                              ) -> tuple[np.ndarray, np.ndarray]:
     """ Compute low-dimensional plot and cluster data using dimensionality
         reduction algorithm, or load already computed results 
     """
@@ -178,7 +174,7 @@ def compute_reduced_repr(data: np.ndarray,
             "learning_rate": 200,  # max(len(data) / 12.0, 200),
             "metric": "cosine",
             # "verbose": True,
-            "perplexity": 30.0,
+            # "perplexity": 30.0,
         }
         tsne = TSNE(**params)
         return tsne.fit_transform(data)
@@ -201,7 +197,6 @@ def cluster_criteria(params: dict,
     # Run clustering algorithm with selected hyper-parameters and save results
     else:
         logging.info("Clustering %s eligibility criteria" % len(token_info["plot_data"]))
-        data = cp.asarray(data)  # for GPU computations
         cluster_info = clusterize(data=data, mode="primary", params=params)
         if cluster_info is not None and cfg.DO_SUBCLUSTERIZE:
             cluster_info = subclusterize(cluster_info, params=params)
@@ -235,27 +230,23 @@ def find_best_cluster_params(data: np.ndarray, model_type: str) -> dict:
         ) as cluster:
             logging.info("%s created" % cluster)
             with Client(cluster, timeout='120s') as client:
-                data = cp.asarray(data)  # for GPU computations
                 db_path = "sqlite:///%s/optuna_%s.db" % (cfg.RESULT_DIR, model_type)
                 study = optuna.create_study(
                     sampler=TPESampler(),
                     direction="maximize",
-                    storage=DaskStorage(db_path, client=client),  # <- try this with many workers/threads!!!
+                    storage=DaskStorage(db_path, client=client),
                 )
                 objective = lambda trial: objective_fn(trial, data)
                 study.optimize(objective, n_trials=cfg.N_OPTUNA_TRIALS)
                 best_params = study.best_params
-                
+        
         logging.info("Best params: %s" % best_params)
         with open(params_path, "w") as file:
             json.dump(best_params, file, indent=4)
-        # del study
-        # clean_cpu_and_gpu_memory()
-        # time.sleep(10)  # chill out a bit
         return best_params
 
 
-def objective_fn(trial: optuna.Trial, data: cp.ndarray) -> float:
+def objective_fn(trial: optuna.Trial, data: np.ndarray) -> float:
     """ Suggest a new set of hyper-parameters and compute associated metric
     """
     # Perform clustering with a new set of suggested parameters
@@ -270,9 +261,9 @@ def objective_fn(trial: optuna.Trial, data: cp.ndarray) -> float:
     
     # Compute metric with clustering results
     if 1 < cluster_info["n_clusters"] < cfg.N_CLUSTER_MAX:
-        cluster_lbls = cp.array(cluster_info["cluster_lbls"])
+        cluster_lbls = cluster_info["cluster_lbls"]
         metric_1 = silhouette_score(data, cluster_lbls, chunksize=20_000)
-        metric_2 = 1.0 - cp.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
+        metric_2 = 1.0 - np.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
         return metric_1 + metric_2
     else:
         return float("-inf")
@@ -324,22 +315,22 @@ def set_cluster_params(n_samples: int, mode: str, params: dict) -> dict:
     }
 
 
-def clusterize(data: cp.ndarray, mode: str, params: dict) -> dict:
+def clusterize(data: np.ndarray, mode: str, params: dict) -> dict:
     """ Cluster data points with hdbscan algorithm and return cluster information
     """
-    # Identify best cluster parameters given the data and cluster mode
+    # Identify cluster parameters given the data and cluster mode
     cluster_params = set_cluster_params(len(data), mode, params)
     
     # Find cluster affordances based on cluster hierarchy
     clusterer = hdbscan.HDBSCAN(**cluster_params)
     clusterer.fit(data)
     lbls = clusterer.labels_
-    n_clusters = cp.max(lbls).item() + 1  # -1 being ignored
-    member_ids = {k: cp.where(lbls == k)[0].tolist() for k in range(-1, n_clusters)}
+    n_clusters = np.max(lbls).item() + 1  # -1 being ignored
+    member_ids = {k: np.where(lbls == k)[0].tolist() for k in range(-1, n_clusters)}
         
     # Put back unclustered samples if secondary mode
     if mode == "secondary":
-        lbls[cp.where(lbls == -1)] = 0
+        lbls[np.where(lbls == -1)] = 0
         
     # Return cluster info
     return {
@@ -358,13 +349,13 @@ def subclusterize(cluster_info: dict, params: dict) -> dict:
     cluster_lengths = {k: len(v) for k, v in cluster_info["cluster_member_ids"].items()}
     sorted_lengths = sorted(cluster_lengths.items(), key=lambda x: x[1], reverse=True)
     cluster_ranking = {k: rank for rank, (k, _) in enumerate(sorted_lengths, start=1)}
-    threshold = int(cp.ceil(cluster_info["n_clusters"] * 0.1))  # 10% largest clusters
+    threshold = int(np.ceil(cluster_info["n_clusters"] * 0.1))  # 10% largest clusters
     large_cluster_ids = [k for k, rank in cluster_ranking.items() if rank <= threshold]
     if -1 in large_cluster_ids: large_cluster_ids.remove(-1)
-
+    
     # For large clusters, try to cluster it further with new hdbscan parameters
     for cluster_id in large_cluster_ids:
-        subset_ids = cp.where(cluster_info["cluster_lbls"] == cluster_id)[0]
+        subset_ids = np.where(cluster_info["cluster_lbls"] == cluster_id)[0]
         subset_data = cluster_info["cluster_data"][subset_ids]
         new_cluster_info = clusterize(data=subset_data, mode="secondary", params=params)
         
@@ -374,7 +365,7 @@ def subclusterize(cluster_info: dict, params: dict) -> dict:
             new_cluster_ids =\
                 [cluster_id] +\
                 [cluster_info["n_clusters"] + i for i in range(n_new_clusters - 1)]
-            cluster_info["n_clusters"] += len(new_cluster_ids)
+            cluster_info["n_clusters"] += n_new_clusters - 1
             
             # And update cluster labels and cluster member ids
             for i, new_cluster_id in enumerate(new_cluster_ids):
@@ -391,13 +382,16 @@ def generate_cluster_reports(token_info, cluster_info, metadata):
     """ Characterize clusters and generate statistics given clinical trials
     """
     # Perform evaulation of clustering with respect to defined labels
+    logging.info("Evaluating cluster quality")
     cluster_metrics = evaluate_clustering(cluster_info, metadata)
     
     # Compute useful statistics and metrics
+    logging.info("Computing cluster statistics")
     cluster_prevalences, label_prevalences, sorted_cluster_member_ids =\
         compute_cluster_statistics(token_info, cluster_info)
     
     # Identify one "typical" criterion string for each cluster of criteria
+    logging.info("Generating cluster tags")
     txts_grouped_by_cluster = [
         [token_info["raw_txt"][i] for i in sample_ids]
         for k, sample_ids in sorted_cluster_member_ids.items() if k != -1
@@ -406,6 +400,7 @@ def generate_cluster_reports(token_info, cluster_info, metadata):
     cluster_typicals = pool_cluster_criteria(close_medoid_criterion_txts)
     
     # Generate a report from the computed prevalences and typical criteria
+    logging.info("Generating detailed and summary reports")
     text_report = generate_text_report(
         txts_grouped_by_cluster,
         cluster_prevalences
@@ -449,60 +444,57 @@ def compute_cluster_statistics(token_info, cluster_info):
     ]
     
     # Sort cluster member ids by how close each member is to its cluster medoid
-    medoids = compute_weighted_cluster_medoids(cluster_info)
+    medoids = compute_cluster_medoids(cluster_info)
     cluster_data = cluster_info["cluster_data"]
     cluster_member_ids = cluster_info["cluster_member_ids"]
     sorted_member_ids = {}
     for k, member_ids in cluster_member_ids.items():
         medoid = medoids[k]
         members_data = cluster_data[member_ids]
-        distances = cupy_cdist(medoid[cp.newaxis, :], members_data)[0]
-        sorted_indices = cp.argsort(cp.nan_to_num(distances).flatten())
+        distances = cupy_cdist(medoid[np.newaxis, :], members_data)[0]
+        sorted_indices = np.argsort(np.nan_to_num(distances).flatten())
         sorted_member_ids[k] = [member_ids[idx] for idx in sorted_indices.get()]
     
     # Return computed statistics
     return cluster_prevalences, label_prevalences, sorted_member_ids
 
 
-def compute_weighted_cluster_medoids(cluster_info: dict) -> dict:
+def compute_cluster_medoids(cluster_info: dict) -> dict:
     """ Compute cluster centroids by averaging samples within each cluster,
         weighting by the sample probability of being in that cluster
     """
     cluster_medoids = {}
     for label in range(-1, cluster_info["n_clusters"]):  # including unassigned
-        cluster_ids = cp.where(cluster_info["cluster_lbls"] == label)[0]
+        cluster_ids = np.where(cluster_info["cluster_lbls"] == label)[0]
         cluster_data = cluster_info["cluster_data"][cluster_ids]
         cluster_medoids[label] = compute_medoid(cluster_data)
         
     return cluster_medoids
 
 
-def compute_medoid(samples: cp.ndarray) -> cp.ndarray:
+def compute_medoid(data: np.ndarray) -> np.ndarray:
     """ Compute medoids of a subset of samples of shape (n_samples, n_features)
         Distance computations are made with dask to mitigate memory requirements
     """
-    samples_dask = da.from_array(samples, chunks='auto')
-    distance_matrix = da.map_blocks(
-        cupy_cdist, samples_dask, samples_dask, dtype=float,
-    )
-    distance_sum = distance_matrix.sum(axis=0)
-    distance_sum_computed = distance_sum.compute()
-    medoid_id = cp.argmin(distance_sum_computed)
-    return samples[medoid_id]
+    dask_data = da.from_array(data, chunks=1_000)
+    def compute_distances(chunk): return cupy_cdist(chunk, data)
+    distances = dask_data.map_blocks(compute_distances, dtype=float)
+    sum_distances = distances.sum(axis=1).compute()
+    medoid_index = sum_distances.argmin().get()
+    return data[medoid_index]
 
 
-def generate_text_report(grouped_by_cluster: list[list[str]],
+def generate_text_report(cluster_groups: list[list[str]],
                          cluster_prevalences: list[float],
                          ) -> list[list[str]]:
     """ Generate a report to write all clusters" criteria in a csv file
     """
-    zipped = list(zip(cluster_prevalences, grouped_by_cluster))
+    zipped = list(zip(cluster_prevalences, cluster_groups))
     zipped.sort(key=lambda x: x[0], reverse=True)  # most prevalent cluster first
-    sorted_groups = [z[1] for z in zipped]  # sorted(grouped_by_cluster, key=len, reverse=True)
+    sorted_groups = [z[1] for z in zipped]  # sorted(cluster_groups, key=len, reverse=True)
     padded_and_transposed = zip_longest(*sorted_groups, fillvalue="")
     text_report = list(map(list, padded_and_transposed))
-    headers = ["Cluster #%i (sorted by CT prevalence)" % i
-               for i in range(len(grouped_by_cluster))]
+    headers = ["Cluster #%i (sorted by prevalence)" % i for _, i in enumerate(cluster_groups)]
     return [headers] + text_report
 
 
@@ -646,7 +638,7 @@ def plot_cluster_hierarchy(token_info: dict,
     ax1.set_title("Data and %s clusters" % n_clusters, fontsize=cfg.TEXT_SIZE)
     
     # Visualize empirical clusters (but only the samples with an assigned cluster)
-    cluster_only_indices = cp.where(cluster_lbls > -1)[0].get()
+    cluster_only_indices = np.where(cluster_lbls > -1)[0]
     clustered_data = plot_data[cluster_only_indices]
     clustered_colors = [cluster_colors[i] for i in cluster_only_indices]    
     ax2 = fig.add_subplot(2, 2, 2, **plot_kwargs)
@@ -786,7 +778,7 @@ def evaluate_clustering(cluster_info, metadata):
     return cluster_metrics
 
 
-def dunn_index(cluster_data: cp.ndarray, cluster_lbls: cp.ndarray) -> float:
+def dunn_index(cluster_data: np.ndarray, cluster_lbls: np.ndarray) -> float:
     """ Compute Dunn index using torch-metrics
     """
     dunn = DunnIndex(p=2)
@@ -797,10 +789,9 @@ def dunn_index(cluster_data: cp.ndarray, cluster_lbls: cp.ndarray) -> float:
     return metric.item()
 
 
-
-def clean_cpu_and_gpu_memory():
-    """ Try to remove unused variables in GPU and CPU, after each model run
-    """
-    gc.collect()
-    cuda.select_device(0)
-    cuda.close()
+# def clean_cpu_and_gpu_memory():
+#     """ Try to remove unused variables in GPU and CPU, after each model run
+#     """
+#     gc.collect()  # cpu memory
+#     cp.get_default_memory_pool().free_all_blocks()  # gpu memory
+#     time.sleep(1)  # chill-out
