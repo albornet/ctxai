@@ -76,7 +76,7 @@ CLUSTER_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
-N_ITER_MAX_TSNE = 10_000 if args.hpc else 10_000
+N_ITER_MAX_TSNE = 100_000
 
 
 # Clustering algorithm and hyper-optimization (optuna) parameters
