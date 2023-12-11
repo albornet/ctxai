@@ -164,7 +164,7 @@ data/*/*/*
 data/postprocessed
 data/preprocessed
 data/mesh_data_2023.xml
-results/*
+results*/*
 *api-key*
 temp.py
 archives/*
