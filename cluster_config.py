@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import argparse
 import subprocess
 import json
+import gc
+import cupy as cp
 
 
 def get_gpu_count():
@@ -22,7 +24,7 @@ def get_gpu_count():
 parser = argparse.ArgumentParser()
 parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
 args = parser.parse_args()
-USE_CUML = True  # todo: include version without cuml for small data
+USE_CUML = True
 LOAD_EMBEDDINGS = False
 LOAD_REDUCED_EMBEDDINGS = False
 LOAD_OPTUNA_RESULTS = False
@@ -36,7 +38,7 @@ NUM_OPTUNA_THREADS = 1
 # Eligibility criteria embedding model parameters
 DEVICE = "cuda:0" if NUM_GPUS > 0 else "cpu"
 BATCH_SIZE = 256 if args.hpc else 64
-MAX_SELECTED_SAMPLES = 280_000
+MAX_SELECTED_SAMPLES = 7_000  # 280_000
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
@@ -50,7 +52,7 @@ MODEL_STR_MAP = {
 
 
 # Eligibility criteria dataset parameters
-RAW_INPUT_FORMAT = "json"  # "json", "xlsx", "dict"
+RAW_INPUT_FORMAT = "ctxai"  # "json", "xlsx", "dict", "ctxai"
 CSV_FILE_MASK = "*criteria.csv"  # "*criteria.csv", "*example.csv"
 DATA_DIR = "data"
 INPUT_DIR = os.path.join(DATA_DIR, "preprocessed", RAW_INPUT_FORMAT)
@@ -61,13 +63,13 @@ with open(os.path.join(DATA_DIR, "mesh_crosswalk_inverted.json"), "r") as f:
 
 
 # Eligibility criteria labelling parameters
-CHOSEN_STATUSES = ["completed", "terminated"]  # ["completed", "suspended", "withdrawn", "terminated", "unknown status"]  # [] to ignore this section filter
+CHOSEN_STATUSES = []  # ["completed", "terminated"]  # ["completed", "suspended", "withdrawn", "terminated", "unknown status"]  # [] to ignore this section filter
 CHOSEN_CRITERIA = []  # ["in"]  # [] to ignore this selection filter
 CHOSEN_PHASES = []  # ["Phase 2"]  # [] to ignore this selection filter
-CHOSEN_COND_IDS = ["C04"]  # [] to ignore this selection filter
+CHOSEN_COND_IDS = []  # ["C04"]  # [] to ignore this selection filter
 CHOSEN_ITRV_IDS = []  # ["D02"]  # [] to ignore this selection filter
-CHOSEN_COND_LVL = 4
-CHOSEN_ITRV_LVL = 3
+CHOSEN_COND_LVL = None  # 4
+CHOSEN_ITRV_LVL = None  # 3
 STATUS_MAP = None  # to use raw labels
 
 
@@ -77,13 +79,14 @@ PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
 N_ITER_MAX_TSNE = 100_000
+REPRESENTATION_METRIC = None  # None, "correlation", "euclidean"
 
 
 # Clustering algorithm and hyper-optimization (optuna) parameters
 N_OPTUNA_TRIALS = 100
 N_CLUSTER_MAX = 500
 DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster
-CLUSTER_SUMMARIZATION_METHOD = "closest" if args.hpc else "closest"
+CLUSTER_SUMMARIZATION_METHOD = "chatgpt"  # "closest", "shortest", "chatgpt"
 OPTUNA_PARAM_RANGES = {
     "max_cluster_size_primary": [0.02, 0.1],
     "min_cluster_size_primary": [0.0007, 0.01],
@@ -119,3 +122,27 @@ NA_COLOR = np.array([0.0, 0.0, 0.0, NA_COLOR_ALPHA])
 COLORS[:, -1] = NOT_NA_COLOR_ALPHA
 SCATTER_PARAMS = {"s": 0.33, "linewidth": 0}
 LEAF_SEPARATION = 0.3
+
+
+def clean_memory_fn():
+    """ Try to remove unused variables in GPU and CPU, after each model run
+    """
+    gc.collect()
+    mempool = cp.get_default_memory_pool()
+    pinned_mempool = cp.get_default_pinned_memory_pool()
+    mempool.free_all_blocks()
+    pinned_mempool.free_all_blocks()
+
+
+def clean_memory():
+    """ Decorator to clean memory before and after a function call
+    """
+    def decorator(original_function):
+        def wrapper(*args, **kwargs):
+            clean_memory_fn()
+            result = original_function(*args, **kwargs)
+            clean_memory_fn()
+            return result
+        return wrapper
+    return decorator
+

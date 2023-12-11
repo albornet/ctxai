@@ -26,16 +26,23 @@ def main():
         format="[%(levelname).1s %(asctime)s] %(message)s",
     )
     
-    # Load results if required (e.g., just to re-plot results)
+    # Load final results if required (e.g., just to re-plot them)
     input_dir = cfg.INPUT_DIR  # split_csv_for_multiprocessing(INPUT_DIR, NUM_WORKERS)
     if cfg.LOAD_FINAL_RESULTS:
         with open(os.path.join(cfg.RESULT_DIR, "model_comparison.pkl"), "rb") as f:
             cluster_metrics = pickle.load(f)
+    
+    # Or generate results using one model, then save the results
     else:
         cluster_metrics = {}
         for model_type in cfg.MODEL_STR_MAP.keys():
+            logging.info("Starting with %s" % model_type)
             cluster_metrics[model_type] = run_one_model(model_type, input_dir)
             logging.info("Done with %s" % model_type)
+        result_path = os.path.join(cfg.RESULT_DIR, "model_comparison.pkl")
+        with open(result_path, "wb") as f: pickle.dump(cluster_metrics, f)
+    
+    # Plot final results (comparison of different model embeddings)
     plot_model_comparison(cluster_metrics)
     logging.info("Model comparison finished!")
 
@@ -56,6 +63,7 @@ def run_one_model(model_type: str, input_dir: str) -> dict:
         embeddings = torch.empty((0, model.config.hidden_size))
         data_loop = tqdm(enumerate(dl), total=cfg.NUM_STEPS, leave=False, smoothing=0.1)
         for i, (encoded, raw_txt, metadata) in data_loop:
+            
             # Compute embeddings for this batch
             encoded = {k: v.to(cfg.DEVICE) for k, v in encoded.items()}
             with torch.no_grad():
@@ -67,6 +75,9 @@ def run_one_model(model_type: str, input_dir: str) -> dict:
             raw_txts.extend(raw_txt)
             metadatas.extend(metadata)
             if i >= cfg.NUM_STEPS - 1: break
+        
+        # Make sure gpu memory is made free for report_cluster
+        torch.cuda.empty_cache()
         
     # Save / load data
     if cfg.LOAD_EMBEDDINGS:
@@ -119,7 +130,7 @@ def get_dataset(data_dir, tokenizer):
         processing functions, with sharding implemented at the file level
     """
     ds = dpi.FileLister(data_dir, recursive=True, masks=cfg.CSV_FILE_MASK)\
-        .open_files(mode="t")\
+        .open_files(mode="t", encoding="utf-8")\
         .parse_csv()\
         .sharding_filter()\
         .filter_clinical_trial()\
@@ -251,6 +262,9 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         """ Construct a list of unique mesh tree labels for a list of condition
             or intervention mesh codes, aiming a specific level in the hierachy
         """
+        # Case where condition or intervention is not important
+        if level is None: return ["N/A"]
+        
         # Filter condition or intervention ids
         if len(chosen_ids) > 0:
             ct_ids = [c for c in ct_ids if any([c.startswith(i) for i in chosen_ids])]
@@ -308,22 +322,25 @@ def plot_model_comparison(metrics):
     """ Generate a comparison plot between models, based on how model embeddings
         produce good clusters
     """
-    # aRRACH
-    to_plot = ["sil_score", "dunn_score", "ar_score", "nm_score",
-               "homogeneity", "completeness", "v_measure"]
+    # Load, parse, ,and format data
+    to_plot = ["Silhouette score", "DB index", "Dunn index", "MI score",
+               "AMI score", "Homogeneity", "Completeness", "V measure"]
     def filter_fn(d: dict[str, dict]) -> dict:
         d_free, d_dept = d["label_free"], d["label_dept"]
         d_free = {k: v for k, v in d_free.items() if k in to_plot}
-        d_free = {k: v / 10 if k == "db_score" else v for k, v in d_free.items()}
+        d_free = {k: v / 10 if k == "DB index" else v for k, v in d_free.items()}
         d_dept = {k: v for k, v in d_dept.items() if k in to_plot}
+        d_dept = {k: v / 5 if k == "MI score" else v for k, v in d_dept.items()}
         d_free.update(d_dept)
         return d_free
     metrics = {k: filter_fn(v) for k, v in metrics.items()}
-        
-    # Retrieve model list from the data
+    
+    # Retrieve metric labels and model names
     labels = list(next(iter(metrics.values())).keys())
+    labels = ["%s / 10.0" % l if l == "DB index" else l for l in labels]
+    labels = ["%s / 5.0" % l if l == "MI score" else l for l in labels]
     num_models = len(metrics.keys())
-    width = 0.6 / num_models  # Adjust width based on number of models
+    width = 0.8 / num_models  # Adjust width based on number of models
     
     # Plot metrics for each model
     fig, ax = plt.subplots(figsize=(12, 5))
@@ -345,21 +362,19 @@ def plot_model_comparison(metrics):
                 ha="center", va="bottom",
                 rotation=90,
             )
-
+            
     # Adjustments to the plot
-    ax.set_ylabel("Scores", fontsize="x-large")
     ax.set_title("Comparison of models for each metric", fontsize="x-large")
     ax.set_xticks([i + width * (num_models - 1) / 2 for i in range(len(labels))])
-    ax.set_xticklabels(labels, fontsize="large")
-    ax.legend(fontsize="large")
-    plt.plot([-0.1, len(metrics) + 0.6], [0, 0], color="k")
+    ax.set_xticklabels(labels, fontsize="large", rotation=22.5)
+    ax.set_ylabel("Scores", fontsize="x-large")
+    ax.legend(fontsize="large", loc="upper right", ncol=4)
+    ax.plot([-0.1, len(metrics) - 0.1], [0, 0], color="k")
     fig.tight_layout()
     
-    # Save raw data and figure
-    if not cfg.LOAD_FINAL_RESULTS:
-        with open(os.path.join(cfg.RESULT_DIR, "model_comparison.pkl"), "wb") as f:
-            pickle.dump(metrics, f)
-    plt.savefig(os.path.join(cfg.RESULT_DIR, "model_comparison.png"), dpi=300)
+    # Save final figure
+    figure_path = os.path.join(cfg.RESULT_DIR, "model_comparison.png")
+    plt.savefig(figure_path, dpi=300)
 
 
 def print_data_summary(metadatas: list[dict[str, str]]) -> None:

@@ -10,7 +10,8 @@ import cluster_config as cfg
 import logging
 
 # Utils
-from cupyx.scipy.spatial.distance import cdist as cupy_cdist
+from scipy.spatial.distance import squareform, pdist as sklearn_pdist
+from cupyx.scipy.spatial.distance import cdist as cupy_cdist, pdist as cupy_pdist
 from scipy.optimize import linear_sum_assignment
 from sklearn.preprocessing import LabelEncoder
 from collections import Counter, OrderedDict
@@ -31,31 +32,38 @@ from openai import (
 
 # Optuna, cuml, and dask
 import optuna
+import dask.array as da
+import cuml
 from optuna.integration.dask import DaskStorage
 from optuna.samplers import TPESampler
-import dask.array as da
 from dask_cuda import LocalCUDACluster
 from dask.distributed import LocalCluster, Client
-from cuml.decomposition import PCA
-from cuml.manifold import TSNE
 from cuml.cluster import hdbscan
+from cuml.decomposition import PCA as cumlPCA
+from cuml.manifold import TSNE as cumlTSNE
+from sklearn.decomposition import PCA as sklearnPCA
+from sklearn.manifold import TSNE as sklearnTSNE
 
 # Metrics
+from cuml.metrics.cluster import silhouette_score
 from torchmetrics.clustering import DunnIndex
-from cuml.metrics.cluster import (
-    silhouette_score,
-    adjusted_rand_score,  # adjusted_rand_index?
+from sklearn.metrics import (
+    davies_bouldin_score,
     mutual_info_score,
-    homogeneity_score,
-    completeness_score,
+    adjusted_mutual_info_score,
+    adjusted_rand_score,
+    homogeneity_completeness_v_measure,
 )
 
-# # Warnings
+# Logs and warnings
+from cuml.common import logger as cuml_logger
+cuml_logger.set_level(cuml_logger.level_info)
 # import warnings
 # warnings.filterwarnings("ignore", category=UserWarning)
 # dask.utils.warnings.filterwarnings('ignore')
 
 
+@cfg.clean_memory()
 def report_clusters(model_type: str,
                     embeddings: torch.Tensor,
                     raw_txt: list[str],
@@ -74,7 +82,7 @@ def report_clusters(model_type: str,
     cluster_info = cluster_criteria(params, cluster_data, token_info, model_type)
     
     # Plot and evaluate clusters and their content
-    # plot_cluster_hierarchy(token_info, cluster_info, model_type)
+    plot_cluster_hierarchy(token_info, cluster_info, model_type)
     stats, texts, metrics = generate_cluster_reports(token_info, cluster_info, metadata)
     
     # Return all results
@@ -99,6 +107,7 @@ def get_token_info(plot_data: np.ndarray,
     return token_info
 
 
+@cfg.clean_memory()
 def get_plot_and_cluster_data(embeddings: torch.Tensor,
                               model_type: str,
                               ) -> tuple[np.ndarray, np.ndarray]:
@@ -114,7 +123,7 @@ def get_plot_and_cluster_data(embeddings: torch.Tensor,
     
     # Recompute reduced dimensionality representation of data and save it
     else:
-        data = embeddings.numpy()  # cp.asarray(embeddings) <- bad for some reason?
+        data = embeddings.numpy()
         cluster_data, plot_data = get_reduced_data(data)
         with open(load_path, "wb") as f:
             pickle.dump(plot_data, f)
@@ -131,7 +140,7 @@ def get_reduced_data(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     logging.info("\nReducing dim of %s eligibility criteria embeddings" % len(data))
     cluster_data = compute_reduced_repr(
         data,
-        dim=cfg.CLUSTER_RED_DIM,
+        reduced_dim=cfg.CLUSTER_RED_DIM,
         algorithm=cfg.CLUSTER_DIM_RED_ALGO,
     )
     
@@ -142,7 +151,7 @@ def get_reduced_data(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     else:
         plot_data = compute_reduced_repr(
             cluster_data,  # data?
-            dim=cfg.PLOT_RED_DIM,
+            reduced_dim=cfg.PLOT_RED_DIM,
             algorithm=cfg.PLOT_DIM_RED_ALGO,
         )
     
@@ -151,35 +160,54 @@ def get_reduced_data(data: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def compute_reduced_repr(data: np.ndarray,
-                         dim: int,
+                         reduced_dim: int,
                          algorithm: str,
+                         compute_rdm: bool=False,
+                         use_gpu: bool=True,  # TODO: GENERALIZE TO ENTIRE SCRIPT
                          ) -> np.ndarray:
     """ Reduce the dimensionality of high-dimensional concept embeddings
     """
     # No dimensionality reduction
-    if dim == None or algorithm == None:
+    if reduced_dim == None or algorithm == None:
         return data
     
+    # Represent data based on sample similarity instead of data
+    if compute_rdm:
+        original_dim = data.shape[1]
+        pdist_fn = cupy_pdist if use_gpu else sklearn_pdist
+        data = squareform(pdist_fn(data, "correlation").get())
+        params = {"n_components": original_dim}
+        pca = cumlPCA(**params) if use_gpu else sklearnPCA(**params)
+        data = pca.fit_transform(data)
+        
     # Simple PCA algorithm
     if algorithm == "pca":
-        return PCA().fit_transform(data)[:, :dim]
+        params = {"n_components": reduced_dim}
+        pca = cumlPCA(**params) if use_gpu else sklearnPCA(**params)
+        return pca.fit_transform(data)
     
     # More computationally costly t-SNE algorithm
     elif algorithm == "tsne":
         params = {
-            "n_components": dim,
-            "method": "barnes_hut" if dim < 4 else "exact",  # "exact" very slow
+            "n_components": reduced_dim,
+            "method": "barnes_hut" if reduced_dim < 4 else "exact",
             "n_iter": cfg.N_ITER_MAX_TSNE,
             "n_iter_without_progress": 1000,
-            "learning_rate": 200,  # max(len(data) / 12.0, 200),
             "metric": "cosine",
-            # "verbose": True,
-            # "perplexity": 30.0,
+            "learning_rate": 200.0,
+            "verbose": True,
         }
-        tsne = TSNE(**params)
+        cuml_specific_params = {
+            "n_neighbors": 32,  # CannyLabs CUDA-TSNE default - TODO: CHECK THAT IT DOESN'T BREAK FOR LARGE N_SAMPLES
+            "perplexity": 50,  # CannyLabs CUDA-TSNE default - TODO: CHECK THAT IT DOESN'T BREAK FOR LARGE N_SAMPLES
+            "learning_rate_method": "none",  # not in sklearn - TODO: CHECK THAT IT DOESN'T BREAK FOR LARGE N_SAMPLES
+        }
+        if use_gpu: params.update(cuml_specific_params)
+        tsne = cumlTSNE(**params) if use_gpu else sklearnTSNE(**params)
         return tsne.fit_transform(data)
 
 
+@cfg.clean_memory()
 def cluster_criteria(params: dict,
                      data: np.ndarray,
                      token_info: dict,
@@ -207,6 +235,7 @@ def cluster_criteria(params: dict,
     return cluster_info
 
 
+@cfg.clean_memory()
 def find_best_cluster_params(data: np.ndarray, model_type: str) -> dict:
     """ Use optuna to determine best set of cluster parameters (or load them)
     """
@@ -223,7 +252,7 @@ def find_best_cluster_params(data: np.ndarray, model_type: str) -> dict:
     # Find and save best hyper-parameters
     else:
         logging.info("Looking for best clustering hyper-parameters")
-        with LocalCluster(
+        with LocalCUDACluster(
             n_workers=cfg.NUM_OPTUNA_WORKERS,
             threads_per_worker=cfg.NUM_OPTUNA_THREADS,
             processes=True,
@@ -417,6 +446,7 @@ def generate_cluster_reports(token_info, cluster_info, metadata):
     return text_report, stat_report, cluster_metrics
 
 
+@cfg.clean_memory()
 def compute_cluster_statistics(token_info, cluster_info):
     """ Compute CT prevalence between clusters & label prevalence within clusters
     """
@@ -494,7 +524,7 @@ def generate_text_report(cluster_groups: list[list[str]],
     sorted_groups = [z[1] for z in zipped]  # sorted(cluster_groups, key=len, reverse=True)
     padded_and_transposed = zip_longest(*sorted_groups, fillvalue="")
     text_report = list(map(list, padded_and_transposed))
-    headers = ["Cluster #%i (sorted by prevalence)" % i for _, i in enumerate(cluster_groups)]
+    headers = ["Cluster #%i (sorted by prevalence)" % i for i, _ in enumerate(cluster_groups)]
     return [headers] + text_report
 
 
@@ -532,7 +562,7 @@ def compute_proportions(lbl_list, unique_lbls):
     return result
 
 
-def pool_cluster_criteria(criterion_txts):
+def pool_cluster_criteria(criterion_txts: list[list[str]]) -> list[str]:
     """ For each cluster, summarize all belonging criteria to a single sentence
     """
     # Take the criterion closest to the cluster medoid
@@ -548,9 +578,10 @@ def pool_cluster_criteria(criterion_txts):
         # Authentificate with a valid api-key
         api_path = os.path.join("data", "api-key-risklick.txt")
         try:
-            with open(api_path, "r") as f: openai.api_key = f.read()
+            with open(api_path, "r") as f: api_key = f.read()
         except:
             raise FileNotFoundError("You must have an api-key at %s" % api_path)
+        client = openai.OpenAI(api_key=api_key)
         
         # Define system context and basic prompt
         system_prompt = "\n".join([
@@ -570,7 +601,7 @@ def pool_cluster_criteria(criterion_txts):
         prompt_loop = tqdm(criterion_txts, "Prompting GPT to summarize clusters")
         for cluster_criteria in prompt_loop:
             user_prompt = base_user_prompt + "\n".join(cluster_criteria)
-            response = prompt_chatgpt(system_prompt, user_prompt)
+            response = prompt_chatgpt(client, system_prompt, user_prompt)
             post_processed = "criterion - ".join(
                 [s.capitalize() for s in response.split("criterion - ")]
             )
@@ -582,20 +613,24 @@ def pool_cluster_criteria(criterion_txts):
     return pooled_criterion_txts
 
 
-def prompt_chatgpt(system_prompt, user_prompt, max_retries=5):
+def prompt_chatgpt(client: openai.OpenAI,
+                   system_prompt: str,
+                   user_prompt: str,
+                   max_retries: int=5):
     """ Collect answer of chat-gpt, given system and user prompts, and avoiding
         rate limit by waiting an exponentially increasing amount of time
     """
     for i in range(max_retries):  # hard limit
         try:
-            response = openai.ChatCompletion.create(
+            # response = openai.ChatCompletion.create(
+            response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
-                ]
+                ],
             )
-            return response["choices"][0]["message"]["content"].strip()
+            return response.choices[0].message.content.strip()
 
         except (RateLimitError, ConnectionError, OpenAIError, APIError,
                 APIStatusError, APITimeoutError, APIConnectionError) as e:
@@ -621,6 +656,9 @@ def plot_cluster_hierarchy(token_info: dict,
     cluster_lbls = cluster_info["cluster_lbls"]
     n_labels = len(set(true_lbls))
     n_clusters = cluster_info["n_clusters"]
+    s_factor = (280_000 / len(true_lbls)) ** 0.75
+    scatter_params = dict(cfg.SCATTER_PARAMS)
+    scatter_params.update({"s": cfg.SCATTER_PARAMS["s"] * s_factor})
     logging.info("Plotting %s criteria embeddings" % len(true_lbls))
     
     # Retrieve relevant data
@@ -632,7 +670,7 @@ def plot_cluster_hierarchy(token_info: dict,
         
     # Visualize empirical clusters
     ax1 = fig.add_subplot(2, 2, 1, **plot_kwargs)
-    ax1.scatter(*plot_data.T, c=cluster_colors, **cfg.SCATTER_PARAMS)
+    ax1.scatter(*plot_data.T, c=cluster_colors, **scatter_params)
     ax1.set_xticklabels([]); ax1.set_yticklabels([])
     ax1.set_xticks([]); ax1.set_yticks([])
     ax1.set_title("Data and %s clusters" % n_clusters, fontsize=cfg.TEXT_SIZE)
@@ -642,14 +680,14 @@ def plot_cluster_hierarchy(token_info: dict,
     clustered_data = plot_data[cluster_only_indices]
     clustered_colors = [cluster_colors[i] for i in cluster_only_indices]    
     ax2 = fig.add_subplot(2, 2, 2, **plot_kwargs)
-    ax2.scatter(*clustered_data.T, c=clustered_colors, **cfg.SCATTER_PARAMS)
+    ax2.scatter(*clustered_data.T, c=clustered_colors, **scatter_params)
     ax2.set_xticklabels([]); ax2.set_yticklabels([])
     ax2.set_xticks([]); ax2.set_yticks([])
     ax2.set_title("Data and %s assigned clusters" % (n_clusters), fontsize=cfg.TEXT_SIZE)
     
     # Visualize theoretical clusters (using, e.g., ICD10-CM code hierarchy)
     ax3 = fig.add_subplot(2, 2, 3, **plot_kwargs)
-    ax3.scatter(*plot_data.T, c=class_colors, **cfg.SCATTER_PARAMS)
+    ax3.scatter(*plot_data.T, c=class_colors, **scatter_params)
     ax3.set_xticklabels([]); ax3.set_yticklabels([])
     ax3.set_xticks([]); ax3.set_yticks([])
     ax3.set_title("Data and %s labels" % n_labels, fontsize=cfg.TEXT_SIZE)
@@ -687,20 +725,28 @@ def get_cluster_colors(true_lbls, cluster_lbls):
         color_map = best_color_match(
             cluster_lbls, true_lbls, unique_clusters, unique_classes)
         color_map = {k: unique_classes.index(v) for k, v in color_map.items()}
-        cluster_colors = [cfg.COLORS[color_map[i]]
-                          if i != -1 else cfg.NA_COLOR for i in cluster_lbls]
-        class_colors = [cfg.COLORS[unique_classes.index(l)]
-                        if l != -1 else cfg.NA_COLOR for l in true_lbls]
+        cluster_colors = [
+            cfg.COLORS[color_map[i]] if i != -1
+            else cfg.NA_COLOR for i in cluster_lbls
+        ]
+        class_colors = [
+            cfg.COLORS[unique_classes.index(l)] if l != -1
+            else cfg.NA_COLOR for l in true_lbls
+        ]
     
     # In this case, empirical clusters define the maximum number of colours
     else:
         color_map = best_color_match(
             true_lbls, cluster_lbls, unique_classes, unique_clusters)
         color_map = {unique_classes.index(k): v for k, v in color_map.items()}
-        cluster_colors = [cfg.COLORS[i]
-                          if i >= 0 else cfg.NA_COLOR for i in cluster_lbls]
-        class_colors = [cfg.COLORS[color_map[unique_classes.index(l)]]
-                        if l != -1 else cfg.NA_COLOR for l in true_lbls]
+        cluster_colors = [
+            cfg.COLORS[i] if i >= 0
+            else cfg.NA_COLOR for i in cluster_lbls
+        ]
+        class_colors = [
+            cfg.COLORS[color_map[unique_classes.index(l)]] if l != -1
+            else cfg.NA_COLOR for l in true_lbls
+        ]
         
     # Return aligned empirical and theorical clusters
     return cluster_colors, class_colors
@@ -712,14 +758,16 @@ def best_color_match(src_lbls, tgt_lbls, unique_src_lbls, unique_tgt_lbls):
     cost_matrix = np.zeros((len(unique_src_lbls), len(unique_tgt_lbls)))
     for i, src_lbl in enumerate(unique_src_lbls):
         for j, tgt_lbl in enumerate(unique_tgt_lbls):
-            count = sum(s == src_lbl and t == tgt_lbl
-                        for s, t in zip(src_lbls, tgt_lbls))
+            count = sum(
+                s == src_lbl and t == tgt_lbl for s, t in zip(src_lbls, tgt_lbls)
+            )
             cost_matrix[i, j] = -count
     
     rows, cols = linear_sum_assignment(cost_matrix)
     return {unique_src_lbls[i]: unique_tgt_lbls[j] for i, j in zip(rows, cols)}
 
 
+@cfg.clean_memory()
 def evaluate_clustering(cluster_info, metadata):
     """ Run final evaluation of clusters, based on phase(s), condition(s), and
         interventions(s). Duplicate each samples for any combination.    
@@ -733,9 +781,12 @@ def evaluate_clustering(cluster_info, metadata):
     itrv_lbls = [l["intervention"] for l in metadata]
     
     # Evaluate clustering quality (label-free)
+    with cuml.common.logger.set_level(cuml.common.logger.level_warn):
+        sil_score = silhouette_score(cluster_data, cluster_lbls, chunksize=20_000)
     cluster_metrics["label_free"] = {
-        "sil_score": silhouette_score(cluster_data, cluster_lbls, chunksize=20_000),
-        "dunn_score": dunn_index(cluster_data, cluster_lbls),
+        "Silhouette score": sil_score,
+        "DB index": davies_bouldin_score(cluster_data, cluster_lbls),
+        "Dunn index": dunn_index(cluster_data, cluster_lbls),
     }
     
     # Create a new sample for each [phase, cond, itrv] label combination
@@ -748,30 +799,24 @@ def evaluate_clustering(cluster_info, metadata):
         for true_lbl_combination in true_lbl_combinations:
             dupl_cluster_lbls.append(cluster_lbl)
             dupl_true_lbls.append(" - ".join(true_lbl_combination))
-    # all_combinations = list(product(phase_lbls[0], cond_lbls[0], itrv_lbls[0]))
-    # all_combinations_joined = [" - ".join(comb) for comb in all_combinations]
-    # for cluster_lbl in cluster_lbls:
-    #     dupl_cluster_lbls.extend([cluster_lbl] * len(all_combinations))
-    #     dupl_true_lbls.extend(all_combinations_joined)
     
     # Create a set of int labels for label-dependent metrics
     encoder = LabelEncoder()
-    int_true_lbls = encoder.fit_transform(dupl_true_lbls)
-    true_lbls = da.array(int_true_lbls, dtype='int32')
-    pred_lbls = da.array(dupl_cluster_lbls, dtype='int32')
+    true_lbls = encoder.fit_transform(dupl_true_lbls).astype(np.int32)
+    pred_lbls = np.array(dupl_cluster_lbls, dtype=np.int32)
     
     # Evaluate clustering quality (label-dependent)
-    homogeneity = homogeneity_score(true_lbls, pred_lbls)
-    completeness = completeness_score(true_lbls, pred_lbls)
-    v_measure = 2 * (homogeneity * completeness) / (homogeneity + completeness)
+    homogeneity, completeness, v_measure = \
+        homogeneity_completeness_v_measure(true_lbls, pred_lbls)
     cluster_metrics["label_dept"] = {
-        "homogeneity": homogeneity,
-        "completeness": completeness,
-        "v_measure": v_measure,
-        "ar_score": adjusted_rand_score(true_lbls, pred_lbls),
-        "nm_score": mutual_info_score(true_lbls, pred_lbls),
+        "Homogeneity": homogeneity,
+        "Completeness": completeness,
+        "V measure": v_measure,
+        "MI score": mutual_info_score(true_lbls, pred_lbls),
+        "AMI score": adjusted_mutual_info_score(true_lbls, pred_lbls),
+        "AR score": adjusted_rand_score(true_lbls, pred_lbls),
     }
-        
+    
     # Return all metrics and some info
     cluster_metrics["n_samples"] = len(cluster_lbls)
     cluster_metrics["n_duplicated_samples"] = len(dupl_cluster_lbls)
@@ -787,11 +832,3 @@ def dunn_index(cluster_data: np.ndarray, cluster_lbls: np.ndarray) -> float:
         torch.as_tensor(cluster_lbls, device="cuda"),
     )
     return metric.item()
-
-
-# def clean_cpu_and_gpu_memory():
-#     """ Try to remove unused variables in GPU and CPU, after each model run
-#     """
-#     gc.collect()  # cpu memory
-#     cp.get_default_memory_pool().free_all_blocks()  # gpu memory
-#     time.sleep(1)  # chill-out
