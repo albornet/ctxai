@@ -36,23 +36,23 @@ NUM_OPTUNA_THREADS = 1
 
 
 # Eligibility criteria embedding model parameters
-DEVICE = "cuda:0" if NUM_GPUS > 0 else "cpu"
+RAW_INPUT_FORMAT = "ctxai"  # "json", "ctxai"
 BATCH_SIZE = 256 if args.hpc else 64
-MAX_SELECTED_SAMPLES = 7_000  # 280_000
+MAX_SELECTED_SAMPLES = 280_000 if RAW_INPUT_FORMAT == "json" else 7_000
+DEVICE = "cuda:0" if NUM_GPUS > 0 else "cpu"
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
-    "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
-    "bert-sentence": "efederici/sentence-bert-base",
+    # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
+    # "bert-sentence": "efederici/sentence-bert-base",
     "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-    "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
-    "roberta": "roberta-large",
-    "bert": "bert-large-uncased",
+    # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
+    # "roberta": "roberta-large",
+    # "bert": "bert-large-uncased",
 }
 
 
 # Eligibility criteria dataset parameters
-RAW_INPUT_FORMAT = "ctxai"  # "json", "xlsx", "dict", "ctxai"
 CSV_FILE_MASK = "*criteria.csv"  # "*criteria.csv", "*example.csv"
 DATA_DIR = "data"
 INPUT_DIR = os.path.join(DATA_DIR, "preprocessed", RAW_INPUT_FORMAT)
@@ -62,15 +62,16 @@ with open(os.path.join(DATA_DIR, "mesh_crosswalk_inverted.json"), "r") as f:
     MESH_CROSSWALK_INVERTED = json.load(f)
 
 
-# Eligibility criteria labelling parameters
+# Eligibility criteria labelling parameters ([] to ignore filters)
 CHOSEN_STATUSES = []  # ["completed", "terminated"]  # ["completed", "suspended", "withdrawn", "terminated", "unknown status"]  # [] to ignore this section filter
 CHOSEN_CRITERIA = []  # ["in"]  # [] to ignore this selection filter
 CHOSEN_PHASES = []  # ["Phase 2"]  # [] to ignore this selection filter
-CHOSEN_COND_IDS = []  # ["C04"]  # [] to ignore this selection filter
+# Infections ["C01"] // Neoplasms ["C04"] // Cardiovascular Diseases ["C14"] // Immune System Diseases ["C20"]
+CHOSEN_COND_IDS = ["C04"] if RAW_INPUT_FORMAT == "json" else []  # TODO: CARDIOLOGY? ETC. LOOK FOR OTHER C0N
 CHOSEN_ITRV_IDS = []  # ["D02"]  # [] to ignore this selection filter
-CHOSEN_COND_LVL = None  # 4
-CHOSEN_ITRV_LVL = None  # 3
-STATUS_MAP = None  # to use raw labels
+CHOSEN_COND_LVL = None  # 4  # None to ignore this one
+CHOSEN_ITRV_LVL = None  # 3  # None to ignore this one
+STATUS_MAP = None
 
 
 # Dimensionality reduction parameters

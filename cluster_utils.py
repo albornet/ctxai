@@ -83,7 +83,8 @@ def report_clusters(model_type: str,
     
     # Plot and evaluate clusters and their content
     plot_cluster_hierarchy(token_info, cluster_info, model_type)
-    stats, texts, metrics = generate_cluster_reports(token_info, cluster_info, metadata)
+    stats, texts, metrics = \
+        generate_cluster_reports(token_info, cluster_info, metadata)
     
     # Return all results
     return stats, texts, metrics
@@ -163,7 +164,6 @@ def compute_reduced_repr(data: np.ndarray,
                          reduced_dim: int,
                          algorithm: str,
                          compute_rdm: bool=False,
-                         use_gpu: bool=True,  # TODO: GENERALIZE TO ENTIRE SCRIPT
                          ) -> np.ndarray:
     """ Reduce the dimensionality of high-dimensional concept embeddings
     """
@@ -174,16 +174,16 @@ def compute_reduced_repr(data: np.ndarray,
     # Represent data based on sample similarity instead of data
     if compute_rdm:
         original_dim = data.shape[1]
-        pdist_fn = cupy_pdist if use_gpu else sklearn_pdist
+        pdist_fn = cupy_pdist if cfg.USE_CUML else sklearn_pdist
         data = squareform(pdist_fn(data, "correlation").get())
         params = {"n_components": original_dim}
-        pca = cumlPCA(**params) if use_gpu else sklearnPCA(**params)
+        pca = cumlPCA(**params) if cfg.USE_CUML else sklearnPCA(**params)
         data = pca.fit_transform(data)
         
     # Simple PCA algorithm
     if algorithm == "pca":
         params = {"n_components": reduced_dim}
-        pca = cumlPCA(**params) if use_gpu else sklearnPCA(**params)
+        pca = cumlPCA(**params) if cfg.USE_CUML else sklearnPCA(**params)
         return pca.fit_transform(data)
     
     # More computationally costly t-SNE algorithm
@@ -197,13 +197,15 @@ def compute_reduced_repr(data: np.ndarray,
             "learning_rate": 200.0,
             "verbose": True,
         }
-        cuml_specific_params = {
-            "n_neighbors": 32,  # CannyLabs CUDA-TSNE default - TODO: CHECK THAT IT DOESN'T BREAK FOR LARGE N_SAMPLES
-            "perplexity": 50,  # CannyLabs CUDA-TSNE default - TODO: CHECK THAT IT DOESN'T BREAK FOR LARGE N_SAMPLES
-            "learning_rate_method": "none",  # not in sklearn - TODO: CHECK THAT IT DOESN'T BREAK FOR LARGE N_SAMPLES
-        }
-        if use_gpu: params.update(cuml_specific_params)
-        tsne = cumlTSNE(**params) if use_gpu else sklearnTSNE(**params)
+        if cfg.USE_CUML and data.shape[0] < 36_000:
+            n_neighbors = min(int(data.shape[0] / 400 + 1), 90)
+            cuml_specific_params = {
+                "n_neighbors": n_neighbors,  # CannyLabs CUDA-TSNE default is 32
+                "perplexity": 50.0,  # n_neighbors / 3,  # CannyLabs CUDA-TSNE default is 50
+                "learning_rate_method": "none",  # not in sklearn and produces bad results
+            }
+            params.update(cuml_specific_params)
+        tsne = cumlTSNE(**params) if cfg.USE_CUML else sklearnTSNE(**params)
         return tsne.fit_transform(data)
 
 
@@ -416,31 +418,28 @@ def generate_cluster_reports(token_info, cluster_info, metadata):
     
     # Compute useful statistics and metrics
     logging.info("Computing cluster statistics")
-    cluster_prevalences, label_prevalences, sorted_cluster_member_ids =\
+    cluster_prevalences, cluster_medoids, sorted_cluster_member_ids =\
         compute_cluster_statistics(token_info, cluster_info)
     
     # Identify one "typical" criterion string for each cluster of criteria
     logging.info("Generating cluster tags")
-    txts_grouped_by_cluster = [
-        [token_info["raw_txt"][i] for i in sample_ids]
-        for k, sample_ids in sorted_cluster_member_ids.items() if k != -1
-    ]  # each cluster group includes criteria sorted by distance to its medoid
-    close_medoid_criterion_txts = [txts[:20] for txts in txts_grouped_by_cluster]
-    cluster_typicals = pool_cluster_criteria(close_medoid_criterion_txts)
+    sorted_txts_grouped_by_cluster = {
+        cluster_id: [token_info["raw_txt"][i] for i in sample_ids]
+        for cluster_id, sample_ids in sorted_cluster_member_ids.items()
+    }  # each cluster group includes criteria sorted by distance to its medoid
+    cluster_titles = pool_cluster_criteria(sorted_txts_grouped_by_cluster)
     
-    # Generate a report from the computed prevalences and typical criteria
+    # Generate reports with cluster samples and another with general info
     logging.info("Generating detailed and summary reports")
     text_report = generate_text_report(
-        txts_grouped_by_cluster,
-        cluster_prevalences
+        sorted_txts_grouped_by_cluster,
+        sorted_cluster_member_ids,
     )
     stat_report = generate_stat_report(
-        cluster_typicals=cluster_typicals,
+        cluster_titles=cluster_titles,
         cluster_prevalences=cluster_prevalences,
-        label_prevalences=label_prevalences,
-        unique_labels=token_info["unique_lbls"],
-        n_cts=len(set(token_info["paths"])),
-        n_ecs=len(token_info["paths"]),
+        cluster_medoids=cluster_medoids,
+        token_info=token_info,
     )
     
     return text_report, stat_report, cluster_metrics
@@ -450,43 +449,38 @@ def generate_cluster_reports(token_info, cluster_info, metadata):
 def compute_cluster_statistics(token_info, cluster_info):
     """ Compute CT prevalence between clusters & label prevalence within clusters
     """
-    # Put back cluster labels to a list (because they are in a cudy array)
+    # Put back cluster labels to a list (because they are in a cupy array)
     cluster_lbls = cluster_info["cluster_lbls"].tolist()
     
     # Compute absolute cluster prevalence by counting clinical trials
     zipped_paths = list(zip(token_info["paths"], cluster_lbls))
-    cluster_sample_paths = [
-        [p for p, l in zipped_paths if l == cluster_id]
-        for cluster_id in range(cluster_info["n_clusters"])
-    ]
+    cluster_sample_paths = {
+        cluster_id: [p for p, l in zipped_paths if l == cluster_id]
+        for cluster_id in range(-1, cluster_info["n_clusters"])
+    }
     n_cts = len(set(token_info["paths"]))
-    cluster_prevalences = [len(set(ps)) / n_cts for ps in cluster_sample_paths]
-    
-    # Compute relative label prevalence inside each cluster
-    zipped_labels = list(zip(token_info["true_lbls"], cluster_lbls))
-    cluster_sample_labels = [
-        [p for p, l in zipped_labels if l == cluster_id]
-        for cluster_id in range(cluster_info["n_clusters"])
-    ]
-    label_prevalences = [
-        compute_proportions(c, token_info["unique_lbls"])
-        for c in cluster_sample_labels
-    ]
+    cluster_prevalences = {
+        # cluster_id: len(paths) / token_info["paths"]
+        cluster_id: len(set(paths)) / n_cts
+        for cluster_id, paths in cluster_sample_paths.items()
+    }
     
     # Sort cluster member ids by how close each member is to its cluster medoid
-    medoids = compute_cluster_medoids(cluster_info)
+    cluster_medoids = compute_cluster_medoids(cluster_info)
     cluster_data = cluster_info["cluster_data"]
     cluster_member_ids = cluster_info["cluster_member_ids"]
-    sorted_member_ids = {}
+    cluster_sorted_member_ids = {}
     for k, member_ids in cluster_member_ids.items():
-        medoid = medoids[k]
+        medoid = cluster_medoids[k]
         members_data = cluster_data[member_ids]
         distances = cupy_cdist(medoid[np.newaxis, :], members_data)[0]
         sorted_indices = np.argsort(np.nan_to_num(distances).flatten())
-        sorted_member_ids[k] = [member_ids[idx] for idx in sorted_indices.get()]
+        cluster_sorted_member_ids[k] = [
+            member_ids[idx] for idx in sorted_indices.get()
+        ]
     
     # Return computed statistics
-    return cluster_prevalences, label_prevalences, sorted_member_ids
+    return cluster_prevalences, cluster_medoids, cluster_sorted_member_ids
 
 
 def compute_cluster_medoids(cluster_info: dict) -> dict:
@@ -514,64 +508,71 @@ def compute_medoid(data: np.ndarray) -> np.ndarray:
     return data[medoid_index]
 
 
-def generate_text_report(cluster_groups: list[list[str]],
-                         cluster_prevalences: list[float],
+def generate_text_report(cluster_texts: dict[int, list[str]],
+                         cluster_member_ids: dict[int, list[int]],
                          ) -> list[list[str]]:
     """ Generate a report to write all clusters" criteria in a csv file
     """
-    zipped = list(zip(cluster_prevalences, cluster_groups))
-    zipped.sort(key=lambda x: x[0], reverse=True)  # most prevalent cluster first
-    sorted_groups = [z[1] for z in zipped]  # sorted(cluster_groups, key=len, reverse=True)
-    padded_and_transposed = zip_longest(*sorted_groups, fillvalue="")
-    text_report = list(map(list, padded_and_transposed))
-    headers = ["Cluster #%i (sorted by prevalence)" % i for i, _ in enumerate(cluster_groups)]
+    # Tag texts with to keeps track of sample id (to retrieve embeddings)
+    for cluster_id, texts in cluster_texts.items():
+        member_ids = cluster_member_ids[cluster_id]
+        tagged_texts = [
+            "<member_id>%i</member_id><text>%s</text>" % (member_id, text)
+            for member_id, text in zip(member_ids, texts)
+        ]
+        cluster_texts[cluster_id] = tagged_texts
+    
+    # Generate content of the csv file report
+    padded_texts = zip_longest(*cluster_texts.values(), fillvalue="")
+    text_report = list(map(list, padded_texts))
+    headers = list(cluster_texts.keys())
     return [headers] + text_report
 
 
-def generate_stat_report(cluster_typicals: list[str],
-                         cluster_prevalences: list[float],
-                         label_prevalences: list[dict],
-                         unique_labels: list[str],
-                         n_cts: int,
-                         n_ecs: int,
+def generate_stat_report(cluster_prevalences: dict[int, float],
+                         cluster_titles: dict[int, str],
+                         cluster_medoids: dict[int, torch.Tensor],
+                         token_info: dict,
                          ) -> list[list[str]]:
     """ Write a report for all cluster, using cluster typical representative
         text, CT prevalence between clusters and label prevalence within cluster
     """
-    zipped = list(zip(cluster_prevalences, cluster_typicals, label_prevalences))
-    zipped.sort(key=lambda x: x[0], reverse=True)  # most prevalent cluster first
-    headers = ["Absolute cluster prevalence", "Cluster representative"]
-    headers += ["Relative status prevalence (%s)" % s for s in unique_labels]
+    headers = ["Cluster id", "prevalence", "title", "medoid"]
     report_lines = []
-    for abs_prev, txt, rel_prev_ordered_dict in zipped:
-        line = ["%i%%" % (abs_prev * 100), txt]
-        line.extend(["%i%%" % (v * 100) for v in rel_prev_ordered_dict.values()])
-        report_lines.append(line)
-    final_line = "Reporting %s similar CTs, including %s ECs" % (n_cts, n_ecs)
-    return [headers] + report_lines + [[final_line]]
+    for cluster_id, title in cluster_titles.items():
+        prevalence_text = "%.4f" % (cluster_prevalences[cluster_id])
+        medoid = cluster_medoids[cluster_id]
+        report_lines.append([cluster_id, prevalence_text, title, medoid])
+    n_cts = len(set(token_info["paths"]))
+    n_ecs = len(token_info["paths"])
+    final_line = ["Reporting %s CTs, including %s ECs" % (n_cts, n_ecs)]
+    return [headers] + report_lines + [final_line]
 
 
-def compute_proportions(lbl_list, unique_lbls):
-    """ Compute proportion of each CT label within each cluster
-        TODO: count only one criterion per CT (here: count all criteria)
-    """
-    result = OrderedDict([(k, 0.0) for k in unique_lbls])
-    counter = Counter(lbl_list)
-    total_count = len(lbl_list)
-    result.update({lbl: count / total_count for lbl, count in counter.items()})
-    return result
-
-
-def pool_cluster_criteria(criterion_txts: list[list[str]]) -> list[str]:
+def pool_cluster_criteria(txts_grouped_by_cluster: dict[int, list[str]],
+                          n_representants: int=20
+                          ) -> dict[int, str]:
     """ For each cluster, summarize all belonging criteria to a single sentence
     """
+    # Load N closest to medoid representants for each clusters
+    cluster_txts = {
+        cluster_id: txts[:n_representants]
+        for cluster_id, txts in txts_grouped_by_cluster.items()
+    }
+    cluster_txts[-1] = ["criterion with undefined cluster"] * n_representants
+    
     # Take the criterion closest to the cluster medoid
     if cfg.CLUSTER_SUMMARIZATION_METHOD == "closest":
-        pooled_criterion_txts = [txts[0] for txts in criterion_txts]
+        cluster_titles = {
+            cluster_id: txts[0] for cluster_id, txts in cluster_txts.items()
+        }
     
     # Take shortest from the 10 criteria closest to the cluster medoid
     elif cfg.CLUSTER_SUMMARIZATION_METHOD == "shortest":
-        pooled_criterion_txts = [min(txts, key=len) for txts in criterion_txts]
+        cluster_titles = {
+            cluster_id: min(txts, key=len)
+            for cluster_id, txts in cluster_txts.items()
+        }
     
     # Use ChatGPT-3.5 to summarize the 10 criteria closest to the cluster medoid
     elif cfg.CLUSTER_SUMMARIZATION_METHOD == "chatgpt":
@@ -597,20 +598,22 @@ def pool_cluster_criteria(criterion_txts: list[list[str]]) -> list[str]:
         ])
         
         # Prompt the model and collect answer for each criterion
-        pooled_criterion_txts = []
-        prompt_loop = tqdm(criterion_txts, "Prompting GPT to summarize clusters")
-        for cluster_criteria in prompt_loop:
+        cluster_titles = {}
+        prompt_loop = tqdm(cluster_txts.items(), "Prompting GPT to summarize clusters")
+        for cluster_id, cluster_criteria in prompt_loop:
             user_prompt = base_user_prompt + "\n".join(cluster_criteria)
             response = prompt_chatgpt(client, system_prompt, user_prompt)
             post_processed = "criterion - ".join(
                 [s.capitalize() for s in response.split("criterion - ")]
             )
-            pooled_criterion_txts.append(post_processed.replace("\n", " "))
-    
-    # Handle wrong method name and return the results
+            cluster_titles[cluster_id] = post_processed.replace("\n", " ")
+            
+    # Handle wrong method name
     else:
         raise ValueError("Wrong pooling method selected.")
-    return pooled_criterion_txts
+    
+    # Return generated cluster titles
+    return cluster_titles
 
 
 def prompt_chatgpt(client: openai.OpenAI,

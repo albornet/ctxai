@@ -5,15 +5,17 @@ from collections import Counter
 from nltk.tokenize import word_tokenize
 
 
-DATA_DIR = os.path.join("results", "dict")
-CLUSTER_INFO_PATH = os.path.join(DATA_DIR, "cluster_report_stat.csv")
-CLUSTER_DATA_PATH = os.path.join(DATA_DIR, "cluster_report_text.csv")
-OUTPUT_PATH = CLUSTER_DATA_PATH.replace("_text.csv", "_list.csv")
+RESULT_DIR = os.path.join("results", "ctxai")
+MODEL = "pubmed-bert-sentence"
+CLUSTER_STAT_PATH = os.path.join(RESULT_DIR, "stat_%s.csv" % MODEL)
+CLUSTER_TEXT_PATH = os.path.join(RESULT_DIR, "text_%s.csv" % MODEL)
+OUTPUT_PATH = os.path.join(RESULT_DIR, "list_%s.csv" % MODEL)
 
 
 def main():
-    cluster_labels = load_labels(CLUSTER_INFO_PATH)
-    raw_data = load_data(CLUSTER_DATA_PATH)
+    import ipdb; ipdb.set_trace()
+    cluster_labels = load_labels(CLUSTER_STAT_PATH)
+    raw_data = load_data(CLUSTER_TEXT_PATH)
     stop_words = find_stop_words(raw_data)
     cleaned_data = remove_stop_words(raw_data, stop_words)
     cluster_terms = find_cluster_terms(cleaned_data)
@@ -94,11 +96,11 @@ def list_samples_by_clusters(raw_data: dict[int, list[str]],
             
             # Append new sample row with newly identified clusters
             clusters = find_clusters(text, cluster_labels, cluster_terms, cluster_id)
-            raw_text = [raw_data[cluster_id][text_id]]
+            raw_text = raw_data[cluster_id][text_id]
             sample_rows.append([raw_text] + clusters)
     
     # Return final list of csv rows)
-    # sample_rows = [r for r in sample_rows if len(r) > 2]  # DEBUG!!!!
+    sample_rows = [r for r in sample_rows if len(r) > 2]  # DEBUG!!!!
     return sample_rows
 
 

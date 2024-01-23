@@ -285,7 +285,7 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         """ Retrieve criterion and contextual information
         """
         term_sequence = (
-            # sample[self.col_id["category"]] + "clusion criterion",
+            sample[self.col_id["category"]] + "clusion criterion",
             # sample[self.col_id["context"]],
             # sample[self.col_id["subcontext"]],
             sample[self.col_id["individual criterion"]],
