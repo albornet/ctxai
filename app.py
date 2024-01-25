@@ -2,8 +2,8 @@ import os
 import json
 import logging
 from dataclasses import asdict
-from flask import Flask, request, jsonify
-from src import cluster_data_fn, ClusterOutput, cluster_config as cfg
+from flask import Flask, jsonify, request
+from src import parse_data_fn, cluster_data_fn, ClusterOutput, config as cfg
 
 app = Flask(__name__)
 
@@ -26,12 +26,18 @@ def predict():
     if "cluster_summarization_params" not in request_data:
         request_data["cluster_summarization_params"] = \
             cfg.DEFAULT_CLUSTER_SUMMARIZATION_PARAMS
+    if "model_type" not in request_data:
+        request_data["model_type"] = cfg.DEFAULT_MODEL_TYPE
     
-    # Call process_instance function to prepare input tensors
+    # Parse raw data into pre-processed data files
+    logging.info("Parsing criterion texts into individual criteria")
+    parse_data_fn()
+    
+    # Cluster pre-processed data
     logging.info("Clustering procedure started")
     cluster_output = cluster_data_fn(
-        model_type=cfg.APP_MODEL,
         input_dir=request_data["input_dir"],
+        model_type=request_data["model_type"],
         cluster_summarization_params=request_data["cluster_summarization_params"]
     )
     

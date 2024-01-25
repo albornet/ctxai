@@ -8,13 +8,13 @@ import torch
 import matplotlib.pyplot as plt
 import logging
 try:
-    from . import cluster_config as cfg
+    from . import config as cfg
 except ImportError:
-    import cluster_config as cfg
+    import src.config as cfg
 
 # Utils
-from scipy.spatial.distance import squareform, pdist as sklearn_pdist
-from cupyx.scipy.spatial.distance import cdist as cupy_cdist, pdist as cupy_pdist
+from scipy.spatial.distance import squareform
+from cupyx.scipy.spatial.distance import cdist, pdist
 from scipy.optimize import linear_sum_assignment
 from sklearn.preprocessing import LabelEncoder
 from itertools import product
@@ -165,7 +165,7 @@ def report_clusters(
     raw_data: torch.Tensor,
     raw_txts: list[str],
     metadatas: list[str],
-    cluster_summarization_params: dict[int, Union[int, str]],
+    cluster_summarization_params: dict[int, Union[int, str]] | None,
     label_type: str="status",  # status, phase, condition, intervention, label
 ) -> tuple[str, str, dict]:
     """ Reduce the dimensionality of concept embeddings for different categories
@@ -186,7 +186,7 @@ def report_clusters(
     
     # Proceed to clustering with the best set of hyper-parameters
     logging.info(" --- Clustering criteria with best set of hyper-parameters")
-    cluster_info = cluster_criteria(params, cluster_data, token_info, model_type)
+    cluster_info = cluster_criteria(params, cluster_data, model_type)
     
     # Plot criteria embeddings and save plot file path
     logging.info(" --- Plotting reduced criteria embeddings and associated clusters")
@@ -253,8 +253,8 @@ def get_plot_and_cluster_data(
     """
     # Retrieve save or load paths for cluster data and plot data
     base_name = "embeddings_%s.pkl" % model_type
-    load_path_cluster = os.path.join(cfg.OUTPUT_DIR, "plotted_%s" % base_name)
-    load_path_plot = os.path.join(cfg.OUTPUT_DIR, "reduced_%s" % base_name)
+    load_path_cluster = os.path.join(cfg.POSTPROCESSED_DIR, "plotted_%s" % base_name)
+    load_path_plot = os.path.join(cfg.POSTPROCESSED_DIR, "reduced_%s" % base_name)
     
     # Load already computed data with reduced dimensionality
     if cfg.LOAD_REDUCED_EMBEDDINGS:
@@ -311,8 +311,7 @@ def compute_reduced_repr(
     # Represent data based on sample similarity instead of data
     if compute_rdm:
         original_dim = data.shape[1]
-        pdist_fn = cupy_pdist if cfg.USE_CUML else sklearn_pdist
-        data = squareform(pdist_fn(data, "correlation").get())
+        data = squareform(pdist(data, "correlation").get())
         params = {"n_components": original_dim}
         pca = PCA(**params)
         data = pca.fit_transform(data)
@@ -334,7 +333,7 @@ def compute_reduced_repr(
             "learning_rate": 200.0,
             "verbose": cuml_logger.level_error,
         }
-        if cfg.USE_CUML and data.shape[0] < 36_000:
+        if data.shape[0] < 36_000:
             n_neighbors = min(int(data.shape[0] / 400 + 1), 90)
             cuml_specific_params = {
                 "n_neighbors": n_neighbors,  # CannyLabs CUDA-TSNE default is 32
@@ -350,14 +349,13 @@ def compute_reduced_repr(
 def cluster_criteria(
     params: dict,
     data: np.ndarray,
-    token_info: dict,
     model_type: str
 ) -> dict:
     """ Cluster criteria and save the results, or load cluster information from
         a previous run, with specific model embeddings 
     """
     # Load already computed clustering results
-    load_path = os.path.join(cfg.OUTPUT_DIR, "cluster_info_%s.pkl" % model_type)
+    load_path = os.path.join(cfg.POSTPROCESSED_DIR, "cluster_info_%s.pkl" % model_type)
     if cfg.LOAD_CLUSTER_INFO:
         with open(load_path, "rb") as f:
             cluster_info = pickle.load(f)
@@ -579,7 +577,7 @@ def compute_cluster_statistics(token_info, cluster_info):
     for k, member_ids in cluster_member_ids.items():
         medoid = cluster_medoids[k]
         members_data = cluster_data[member_ids]
-        distances = cupy_cdist(medoid[np.newaxis, :], members_data)[0]
+        distances = cdist(medoid[np.newaxis, :], members_data)[0]
         sorted_indices = np.argsort(np.nan_to_num(distances).flatten())
         cluster_sorted_member_ids[k] = [
             member_ids[idx] for idx in sorted_indices.get()
@@ -607,7 +605,7 @@ def compute_medoid(data: np.ndarray) -> np.ndarray:
         Distance computations are made with dask to mitigate memory requirements
     """
     dask_data = da.from_array(data, chunks=1_000)
-    def compute_distances(chunk): return cupy_cdist(chunk, data)
+    def compute_distances(chunk): return cdist(chunk, data)
     distances = dask_data.map_blocks(compute_distances, dtype=float)
     sum_distances = distances.sum(axis=1).compute()
     medoid_index = sum_distances.argmin().get()
@@ -616,10 +614,14 @@ def compute_medoid(data: np.ndarray) -> np.ndarray:
 
 def summarize_cluster_criteria(
     txts_grouped_by_cluster: dict[int, list[str]],
-    cluster_summarization_params: dict[str, Union[int, str]],
+    cluster_summarization_params: dict[str, Union[int, str]] | None,
 ) -> dict[int, str]:
     """ For each cluster, summarize all belonging criteria to a single sentence
     """
+    # Take default clusterization parameters if not provided
+    if cluster_summarization_params is None:
+        cluster_summarization_params = cfg.DEFAULT_CLUSTER_SUMMARIZATION_PARAMS
+    
     # Load N closest to medoid representants for each clusters
     n_representants = cluster_summarization_params["n_representants"]
     cluster_txts = {

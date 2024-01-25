@@ -14,10 +14,10 @@ from torchdata.datapipes import functional_datapipe
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
 from transformers import AutoModel, AutoTokenizer
 try:
-    from . import cluster_config as cfg
+    from . import config as cfg
     from .cluster_utils import ClusterOutput, report_clusters
 except ImportError:
-    import cluster_config as cfg
+    import src.config as cfg
     from cluster_utils import ClusterOutput, report_clusters
 
 
@@ -42,7 +42,7 @@ def main():
         cluster_metrics = {}
         for model_type in cfg.MODEL_STR_MAP.keys():
             logging.info(" - Starting with %s" % model_type)
-            cluster_output = cluster_data_fn(model_type, cfg.INPUT_DIR)
+            cluster_output = cluster_data_fn(cfg.PREPROCESSED_DIR, model_type)
             cluster_metrics[model_type] = cluster_output.cluster_metrics
             logging.info(" - Done with %s" % model_type)
         with open(final_results_path, "wb") as f:
@@ -54,19 +54,25 @@ def main():
 
 
 def cluster_data_fn(
-    model_type: str,
     input_dir: str,
-    cluster_summarization_params: dict[int, Union[int, str]],
+    model_type: str | None,
+    cluster_summarization_params: dict[int, Union[int, str]] | None,
 ) -> ClusterOutput:
     """ Cluster eligibility criteria using embeddings from one language model
     """
+    # Take default model if not provided
+    if model_type is None:
+        model_type = cfg.DEFAULT_MODEL_TYPE
+        
     # Save / load data
     logging.info(" - Retrieving elibility criteria embeddings with %s" % model_type)
     if cfg.LOAD_EMBEDDINGS:
-        embeddings, raw_txts, metadatas = load_embeddings(cfg.OUTPUT_DIR, model_type)
+        embeddings, raw_txts, metadatas = load_embeddings(
+            cfg.POSTPROCESSED_DIR, model_type,
+        )
     else:
         embeddings, raw_txts, metadatas = generate_embeddings(input_dir, model_type)
-        save_data(cfg.OUTPUT_DIR, model_type, embeddings, raw_txts, metadatas)
+        save_data(cfg.POSTPROCESSED_DIR, model_type, embeddings, raw_txts, metadatas)
     
     # Generate clusters and report them as a formatted data structure
     logging.info(" - Running clustering algorithm on eligibility criteria embeddings")

@@ -2,9 +2,9 @@ import os
 import json
 import numpy as np
 import matplotlib.pyplot as plt
+import logging
 import argparse
 import subprocess
-import json
 import gc
 import cupy as cp
 
@@ -24,7 +24,7 @@ def get_gpu_count():
 parser = argparse.ArgumentParser()
 parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
 args = parser.parse_args()
-USE_CUML = True
+LOAD_PREPROCESSED_DATA = False  # False
 LOAD_EMBEDDINGS = False  # False
 LOAD_REDUCED_EMBEDDINGS = False  # False
 LOAD_OPTUNA_RESULTS = False  # False
@@ -34,14 +34,20 @@ NUM_GPUS = get_gpu_count()
 NUM_OPTUNA_WORKERS = 1
 NUM_OPTUNA_THREADS = 1
 
+# Eligility criteria parsing parameters
+RAW_INPUT_FORMAT = "ctxai"  # "json", "ctxai"
+NUM_PARSE_WORKERS = 0  # 12
+NUM_PARSE_WORKERS = min(NUM_PARSE_WORKERS, max(os.cpu_count() - 4, os.cpu_count() // 4))
+if NUM_PARSE_WORKERS > 0 and RAW_INPUT_FORMAT != "json":
+    logging.warning("NUM_PARSE_WORKER was set to 0 because a single file is processed")
+    NUM_PARSE_WORKERS = 0
 
 # Eligibility criteria embedding model parameters
-RAW_INPUT_FORMAT = "ctxai"  # "json", "ctxai"
 BATCH_SIZE = 256 if args.hpc else 64
 MAX_SELECTED_SAMPLES = 280_000 if RAW_INPUT_FORMAT == "json" else 7_000
 DEVICE = "cuda:0" if NUM_GPUS > 0 else "cpu"
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
-APP_MODEL = "pubmed-bert-sentence"
+DEFAULT_MODEL_TYPE = "pubmed-bert-sentence"
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
     # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
@@ -55,11 +61,17 @@ MODEL_STR_MAP = {
 
 # Eligibility criteria dataset parameters
 CSV_FILE_MASK = "*criteria.csv"  # "*criteria.csv", "*example.csv"
-DATA_DIR = "data"
-INPUT_DIR = os.path.join(DATA_DIR, "preprocessed", RAW_INPUT_FORMAT)
-OUTPUT_DIR = os.path.join(DATA_DIR, "postprocessed", RAW_INPUT_FORMAT)
+BASE_DATA_DIR = "data"
+RAW_DATA_DIR = os.path.join("data", "raw_files", RAW_INPUT_FORMAT)
+PREPROCESSED_DIR = os.path.join(BASE_DATA_DIR, "preprocessed", RAW_INPUT_FORMAT)
+PREPROCESSED_DATA_HEADERS = [
+    "criteria paragraph", "complexity", "ct path", "label", "phases",
+    "conditions", "condition_ids", "intervention_ids", "category", "context",
+    "subcontext", "individual criterion",
+]
+POSTPROCESSED_DIR = os.path.join(BASE_DATA_DIR, "postprocessed", RAW_INPUT_FORMAT)
 RESULT_DIR = os.path.join("results", RAW_INPUT_FORMAT)
-with open(os.path.join(DATA_DIR, "mesh_crosswalk_inverted.json"), "r") as f:
+with open(os.path.join(BASE_DATA_DIR, "mesh_crosswalk_inverted.json"), "r") as f:
     MESH_CROSSWALK_INVERTED = json.load(f)
 
 

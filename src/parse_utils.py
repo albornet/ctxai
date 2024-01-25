@@ -3,7 +3,7 @@ import re
 import pandas as pd
 import json
 import nltk
-nltk.download('punkt')
+import logging
 from difflib import SequenceMatcher
 from nltk.tokenize import sent_tokenize
 # from clinitokenizer.tokenize import clini_tokenize
@@ -34,7 +34,7 @@ CONTEXT_KEYS = [
     'disease characteristics', 'elevated psa criteria', 'psa criteria',
     'initial doses?', 'additional doses?',
 ]
-SUBCONTEXT_KEYS = [  # TODO (?) ASSOCIATE EVERY KEY TO A CONTEXT KEY (?)
+SUBCONTEXT_KEYS = [
     'infants?', 'allowed for infants?', 'women', 'allowed for women',
     'allowed for pregnant women', 'life expectancy', 'hematopoietic',
     'hematologic', 'hepatic', 'renal', 'cardiovascular', 'cardiac', 'pulmonary',
@@ -46,7 +46,6 @@ SUBCONTEXT_KEYS = [  # TODO (?) ASSOCIATE EVERY KEY TO A CONTEXT KEY (?)
     'eligible subtypes?', 'hormone receptor status', 'menopausal status',
     'at least 1 of the following factors', 'serology', 'chemistry',
 ]
-NON_CONTEXT_KEYS = ['notes?', 'amended']  # not used for now
 SIMILARITY_FN = lambda s, k: SequenceMatcher(None, s, k).ratio()
 MAX_SIMILARITY_FN = lambda s, keys: max([SIMILARITY_FN(s.lower(), k) for k in keys])
 MESH_CROSSWALK_PATH = os.path.join('data', 'mesh_crosswalk.json')
@@ -163,6 +162,8 @@ class CriteriaParser(IterDataPipe):
     """
     def __init__(self, dp):
         super().__init__()
+        logging.info(" - Downloading package punkt to tokenize sentences")
+        nltk.download("punkt", quiet=True)
         self.dp = dp
     
     def __iter__(self):
@@ -336,6 +337,7 @@ class CriteriaParser(IterDataPipe):
         
         # Return post-processed criteria
         return post_parsed
+        
         
 @functional_datapipe('write_csv')
 class CriteriaCSVWriter(IterDataPipe):
