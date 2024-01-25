@@ -1,0 +1,9 @@
+services:
+   ade:
+      image: cluster_analysis:1.0
+      build:
+         context: .
+         dockerfile: ./Dockerfile
+      container_name: cluster_analysis
+      ports:
+         - 8984:8984

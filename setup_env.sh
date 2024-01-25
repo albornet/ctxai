@@ -3,7 +3,6 @@
 # Environment specifics
 ENV_NAME="ctxai"
 PYTHON_VERSION="3.10"
-PIP_PACKAGES="torch numpy pandas scipy scikit-learn matplotlib tqdm nltk torchdata torchmetrics transformers openai optuna hdbscan openpyxl"
 
 # Create a new conda environment and activate it
 conda create --name $ENV_NAME python=$PYTHON_VERSION -y
@@ -13,7 +12,7 @@ source activate $ENV_NAME
 if [ "$CONDA_DEFAULT_ENV" = "$ENV_NAME" ]; then
 
     # Install latest version of pip packages
-    pip install -U $PIP_PACKAGES
+    pip install -U -r pip_requirements.txt
 
     # Install cuml last with conda
     conda install -n $ENV_NAME cuml -c rapidsai -c conda-forge -c nvidia -y

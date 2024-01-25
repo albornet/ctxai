@@ -1,105 +1,84 @@
 import os
 import ast
-import csv
 import pickle
 import glob
 import shutil
 import logging
-import numpy as np
 import pandas as pd
 import torch
 import torchdata.datapipes.iter as dpi
 import matplotlib.pyplot as plt
-import cluster_config as cfg
+from typing import Union
 from tqdm import tqdm
 from torchdata.datapipes import functional_datapipe
 from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
 from transformers import AutoModel, AutoTokenizer
-from collections import Counter
-from cluster_utils import report_clusters
+try:
+    from . import cluster_config as cfg
+    from .cluster_utils import ClusterOutput, report_clusters
+except ImportError:
+    import cluster_config as cfg
+    from cluster_utils import ClusterOutput, report_clusters
 
 
 def main():
-    # Set logging level and format
+    """ If ran as a script, call cluster_data for several models and write
+        a summary of results to a directory given by cfg.RESULT_DIR
+    """
+    # Format logging messages
     logging.basicConfig(
         level=logging.INFO,
         format="[%(levelname).1s %(asctime)s] %(message)s",
     )
     
     # Load final results if required (e.g., just to re-plot them)
-    input_dir = cfg.INPUT_DIR  # split_csv_for_multiprocessing(INPUT_DIR, NUM_WORKERS)
+    final_results_path = os.path.join(cfg.RESULT_DIR, "model_comparison.pkl")
     if cfg.LOAD_FINAL_RESULTS:
-        with open(os.path.join(cfg.RESULT_DIR, "model_comparison.pkl"), "rb") as f:
+        with open(final_results_path, "rb") as f:
             cluster_metrics = pickle.load(f)
     
     # Or generate results using one model, then save the results
     else:
         cluster_metrics = {}
         for model_type in cfg.MODEL_STR_MAP.keys():
-            logging.info("Starting with %s" % model_type)
-            cluster_metrics[model_type] = run_one_model(model_type, input_dir)
-            logging.info("Done with %s" % model_type)
-        result_path = os.path.join(cfg.RESULT_DIR, "model_comparison.pkl")
-        with open(result_path, "wb") as f: pickle.dump(cluster_metrics, f)
+            logging.info(" - Starting with %s" % model_type)
+            cluster_output = cluster_data_fn(model_type, cfg.INPUT_DIR)
+            cluster_metrics[model_type] = cluster_output.cluster_metrics
+            logging.info(" - Done with %s" % model_type)
+        with open(final_results_path, "wb") as f:
+            pickle.dump(cluster_metrics, f)
     
     # Plot final results (comparison of different model embeddings)
     plot_model_comparison(cluster_metrics)
     logging.info("Model comparison finished!")
 
 
-def run_one_model(model_type: str, input_dir: str) -> dict:
+def cluster_data_fn(
+    model_type: str,
+    input_dir: str,
+    cluster_summarization_params: dict[int, Union[int, str]],
+) -> ClusterOutput:
     """ Cluster eligibility criteria using embeddings from one language model
     """
-    # Initialize language model and data pipeline
-    if not cfg.LOAD_EMBEDDINGS:
-        model, tokenizer, pooling_fn = get_model_pipeline(model_type)
-        ds = get_dataset(input_dir, tokenizer)
-        rs = MultiProcessingReadingService(num_workers=1)
-        dl = DataLoader2(ds, reading_service=rs)
-    
-    # Populate tensor with eligibility criteria embeddings
-    if not cfg.LOAD_EMBEDDINGS:
-        raw_txts, metadatas = [], []
-        embeddings = torch.empty((0, model.config.hidden_size))
-        data_loop = tqdm(enumerate(dl), total=cfg.NUM_STEPS, leave=False, smoothing=0.1)
-        for i, (encoded, raw_txt, metadata) in data_loop:
-            
-            # Compute embeddings for this batch
-            encoded = {k: v.to(cfg.DEVICE) for k, v in encoded.items()}
-            with torch.no_grad():
-                outputs = model(**encoded)
-            ec_embeddings = pooling_fn(encoded, outputs)
-            
-            # Record model outputs (tensor), input texts and corresponding labels
-            embeddings = torch.cat((embeddings, ec_embeddings.cpu()), dim=0)
-            raw_txts.extend(raw_txt)
-            metadatas.extend(metadata)
-            if i >= cfg.NUM_STEPS - 1: break
-        
-        # Make sure gpu memory is made free for report_cluster
-        torch.cuda.empty_cache()
-        
     # Save / load data
+    logging.info(" - Retrieving elibility criteria embeddings with %s" % model_type)
     if cfg.LOAD_EMBEDDINGS:
         embeddings, raw_txts, metadatas = load_embeddings(cfg.OUTPUT_DIR, model_type)
     else:
+        embeddings, raw_txts, metadatas = generate_embeddings(input_dir, model_type)
         save_data(cfg.OUTPUT_DIR, model_type, embeddings, raw_txts, metadatas)
     
-    # Generate clusters and save results and metrics for model comparison
+    # Generate clusters and report them as a formatted data structure
+    logging.info(" - Running clustering algorithm on eligibility criteria embeddings")
     os.makedirs(cfg.RESULT_DIR, exist_ok=True)
-    texts, stats, metrics = report_clusters(model_type, embeddings, raw_txts, metadatas)
+    return report_clusters(
+        model_type=model_type,
+        raw_data=embeddings,
+        raw_txts=raw_txts,
+        metadatas=metadatas,
+        cluster_summarization_params=cluster_summarization_params,
+    )
     
-    # Generate csv report from raw text results
-    stat_path = os.path.join(cfg.RESULT_DIR, "stat_%s.csv" % model_type)
-    with open(stat_path, "w", encoding="utf-8", newline="") as file:
-        csv.writer(file).writerows(stats)
-    text_path = os.path.join(cfg.RESULT_DIR, "text_%s.csv" % model_type)
-    with open(text_path, "w", encoding="utf-8", newline="") as file:
-        csv.writer(file).writerows(texts)
-    
-    # Return metrics for this model
-    return metrics
-
 
 def get_model_pipeline(model_type):
     """ Select a model and the corresponding tokenizer and embed function
@@ -139,6 +118,49 @@ def get_dataset(data_dir, tokenizer):
     return ds
 
 
+def generate_embeddings(
+    input_dir: str,
+    model_type: str
+) -> tuple[torch.Tensor, list[str], list[dict]]:
+    """ Generate a set of embeddigns from data in a given input directory, using
+        a given model
+    """
+    # Load model and data pipeline
+    logging.info(" --- Running model to generate embeddings")
+    model, tokenizer, pooling_fn = get_model_pipeline(model_type)
+    ds = get_dataset(input_dir, tokenizer)
+    rs = MultiProcessingReadingService(num_workers=1)  # not so useful in the end
+    dl = DataLoader2(ds, reading_service=rs)
+    
+    # Go through data pipeline
+    raw_txts, metadatas = [], []
+    embeddings = torch.empty((0, model.config.hidden_size))
+    for i, (encoded, raw_txt, metadata) in tqdm(
+        iterable=enumerate(dl),
+        total=cfg.NUM_STEPS,
+        leave=False,
+        desc="Processing eligibility criteria dataset"
+    ):
+        
+        # Compute embeddings for this batch
+        encoded = {k: v.to(cfg.DEVICE) for k, v in encoded.items()}
+        with torch.no_grad():
+            outputs = model(**encoded)
+        ec_embeddings = pooling_fn(encoded, outputs)
+        
+        # Record model outputs (tensor), input texts and corresponding labels
+        embeddings = torch.cat((embeddings, ec_embeddings.cpu()), dim=0)
+        raw_txts.extend(raw_txt)
+        metadatas.extend(metadata)
+        if i >= cfg.NUM_STEPS - 1: break
+    
+    # Make sure gpu memory is made free for report_cluster
+    torch.cuda.empty_cache()
+    
+    # Return embeddings, as well as raw text data and some metadata 
+    return embeddings, raw_txts, metadatas
+    
+
 def save_data(dir_, model_type, embeddings, raw_txts, labels):
     """ Simple saving function for model predictions
     """
@@ -153,6 +175,7 @@ def save_data(dir_, model_type, embeddings, raw_txts, labels):
 def load_embeddings(dir_, model_type):
     """ Simple loading function for model predictions
     """
+    logging.info(" --- Loading embeddings from previous run")
     embeddings = torch.load(os.path.join(dir_, "embeddings_%s.pt" % model_type))
     with open(os.path.join(dir_, "raw_txts.pkl"), "rb") as f:
         raw_txts = pickle.load(f)
@@ -195,7 +218,6 @@ class ClinicalTrialFilter(dpi.IterDataPipe):
         ct_path = sample[self.col_id["ct path"]],
         ct_status = sample[self.col_id["label"]].lower()
         metadata = {"path": ct_path, "status": ct_status}
-        if cfg.RAW_INPUT_FORMAT == "dict": return metadata, True  # special case
         
         # Load relevant data
         ct_phases = ast.literal_eval(sample[self.col_id["phases"]])
@@ -377,66 +399,6 @@ def plot_model_comparison(metrics):
     plt.savefig(figure_path, dpi=300)
 
 
-def print_data_summary(metadatas: list[dict[str, str]]) -> None:
-    """ Debug function to find the best combination of filters and levels
-    """
-    # What filters were used
-    print("Filters:")
-    print("\t- Status: %s" % cfg.CHOSEN_STATUSES)
-    print("\t- Type: %s" % cfg.CHOSEN_CRITERIA)
-    print("\t- Phase: %s" % cfg.CHOSEN_PHASES)
-    print("\t- Cond: %s" % cfg.CHOSEN_COND_IDS)
-    print("\t- Itrv: %s" % cfg.CHOSEN_ITRV_IDS)
-    
-    # What level were used
-    print("Levels:")
-    print("\t- Cond: %s" % cfg.CHOSEN_COND_LVL)
-    print("\t- Itrv: %s" % cfg.CHOSEN_ITRV_LVL)
-    
-    # Get labels
-    ct_paths = [d["path"] for d in metadatas]
-    phase_labels = [" - ".join(d["phase"]) for d in metadatas]
-    cond_labels = [" - ".join(d["condition"]) for d in metadatas]
-    itrv_labels = [" - ".join(d["intervention"]) for d in metadatas]
-    single_labels = [d["label"] for d in metadatas]
-    
-    # Compute number of ECs per label (skipping small label groups)
-    thresh_ec = len(metadatas) // 1000  # each label must contain a least 0.1% ECs
-    single_label_counts = Counter(single_labels)
-    ecs_per_label = [c for c in single_label_counts.values() if c > thresh_ec]
-    
-    # Compute number of CTs per label (skipping small label groups)
-    thresh_ct = len(set(ct_paths)) // 1000  # each label must contain a least 0.1% CTs
-    ct_paths_per_label = {}
-    for single_label, ct_path in zip(single_labels, ct_paths):
-        if single_label not in ct_paths_per_label:
-            ct_paths_per_label[single_label] = set()
-        ct_paths_per_label[single_label].add(ct_path)
-    cts_per_label = [len(p) for p in ct_paths_per_label.values() if len(p) > thresh_ct]
-    
-    # Resulting numbers
-    print("Numbers:")
-    print("\t- N ECs: %s" % len(metadatas))
-    print("\t- N CTs: %s" % len(set(ct_paths)))
-    print("\t- N phases: %s" % len(set(phase_labels)))
-    print("\t- N conds: %s" % len(set(cond_labels)))
-    print("\t- N itrvs: %s" % len(set(itrv_labels)))
-    print("\t- N labels: %s" % len(set(single_labels)))
-    
-    # Resulting statistics
-    print("Statistics:")
-    print("\t- Minimum EC per label: %s" % thresh_ec)
-    print("\t- N labels above EC threshold: %s" % len(ecs_per_label))
-    print("\t- N ECs above threshold: %s" % sum(ecs_per_label))
-    print("\t- Average ECs per label: %s" % np.mean(ecs_per_label))
-    print("\t- Median ECs per label: %s" % np.median(ecs_per_label))
-    print("\t- Minimum CT per label: %s" % thresh_ct)
-    print("\t- N labels above CT threshold: %s" % len(cts_per_label))
-    print("\t- N CTs above threshold: %s" % sum(cts_per_label))
-    print("\t- Average CTs per label: %s" % np.mean(cts_per_label))
-    print("\t- Median CTs per label: %s" % np.median(cts_per_label))
-
-
 def split_csv_for_multiprocessing(input_dir, num_workers):
     """ Split one big csv file into N different smaller files to be processed
         by multiple processes
@@ -450,7 +412,7 @@ def split_csv_for_multiprocessing(input_dir, num_workers):
     os.makedirs(output_dir, exist_ok=True)
     
     # Split the big file into smaller pieces
-    logging.info("Loading csv file for multiprocessing split")
+    logging.info(" --- Loading csv file for multiprocessing split")
     csv_path = csv_files[0]
     csv_name = os.path.split(csv_path)[-1]
     df = pd.read_csv(csv_path)

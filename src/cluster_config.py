@@ -25,11 +25,11 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
 args = parser.parse_args()
 USE_CUML = True
-LOAD_EMBEDDINGS = False
-LOAD_REDUCED_EMBEDDINGS = False
-LOAD_OPTUNA_RESULTS = False
-LOAD_CLUSTER_INFO = False
-LOAD_FINAL_RESULTS = False
+LOAD_EMBEDDINGS = False  # False
+LOAD_REDUCED_EMBEDDINGS = False  # False
+LOAD_OPTUNA_RESULTS = False  # False
+LOAD_CLUSTER_INFO = False  # False
+LOAD_FINAL_RESULTS = False  # False
 NUM_GPUS = get_gpu_count()
 NUM_OPTUNA_WORKERS = 1
 NUM_OPTUNA_THREADS = 1
@@ -41,11 +41,12 @@ BATCH_SIZE = 256 if args.hpc else 64
 MAX_SELECTED_SAMPLES = 280_000 if RAW_INPUT_FORMAT == "json" else 7_000
 DEVICE = "cuda:0" if NUM_GPUS > 0 else "cpu"
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
+APP_MODEL = "pubmed-bert-sentence"
 MODEL_STR_MAP = {
     "pubmed-bert-sentence": "pritamdeka/S-PubMedBert-MS-MARCO",
     # "transformer-sentence": "sentence-transformers/all-mpnet-base-v2",
     # "bert-sentence": "efederici/sentence-bert-base",
-    "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
+    # "pubmed-bert-token": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
     # "bioct-bert-token": "domenicrosati/ClinicalTrialBioBert-NLI4CT",
     # "roberta": "roberta-large",
     # "bert": "bert-large-uncased",
@@ -87,7 +88,6 @@ REPRESENTATION_METRIC = None  # None, "correlation", "euclidean"
 N_OPTUNA_TRIALS = 100
 N_CLUSTER_MAX = 500
 DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster
-CLUSTER_SUMMARIZATION_METHOD = "chatgpt"  # "closest", "shortest", "chatgpt"
 OPTUNA_PARAM_RANGES = {
     "max_cluster_size_primary": [0.02, 0.1],
     "min_cluster_size_primary": [0.0007, 0.01],
@@ -107,6 +107,24 @@ DEFAULT_CLUSTERING_PARAMS = {
     'min_samples_secondary': 0.00031720162384443566,
     'alpha': 0.6993816357610149,
     'cluster_selection_method': 'eom'
+}
+
+
+# Default parameters for cluster title generation
+DEFAULT_CLUSTER_SUMMARIZATION_PARAMS = {
+    "method": "closest",  # "closest", "shortest", "gpt"
+    "n_representants": 20,
+    "gpt_system_prompt": " ".join([  # only used if method == gpt
+        "You are an expert in the fields of clinical trials and eligibility criteria.",
+        "You express yourself succintly, i.e., less than 250 characters per response.",
+    ]),
+    "gpt_user_prompt_intro": " ".join([  # only used if method == gpt
+        "I will show you a list of eligility criteria. They share some level of similarity.",
+        "I want you to generate one small tag that best represents the list.",
+        "The tag should be short and concise (typically a few words), and should not focus too much on details or outliers.",
+        "Importantly, you should only write your answer, and it should start with either 'Inclusion criterion - ' or 'Exclusion criterion - ' (choosing only one of them).",
+        "Here is the list of criteria (each one is on a new line):\n",
+    ])
 }
 
 
