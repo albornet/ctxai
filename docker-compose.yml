@@ -1,9 +1,19 @@
+version: '2.3'
 services:
-   ade:
-      image: cluster_analysis:1.0
-      build:
-         context: .
-         dockerfile: ./Dockerfile
-      container_name: cluster_analysis
-      ports:
-         - 8984:8984
+  app:
+    build: .
+    ports:
+      - "8984:8984"
+    environment:
+      - FLASK_ENV=production
+    volumes:
+      - .:/app
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #       - driver: nvidia
+    #         device_ids: ['0']
+    #         capabilities: [gpu]
+    runtime: nvidia
+    command: gunicorn --bind 0.0.0.0:8984 wsgi:app

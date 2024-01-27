@@ -69,15 +69,30 @@ def parse_data_fn() -> None:
         dl.shutdown()
         
     
-def get_dataset(data_dir, input_format, shuffle=False):
+def get_dataset(
+    data_path: str,
+    input_format: str,
+    shuffle: bool=False
+) -> dpi.IterDataPipe:
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
-    # Load correct files
-    masks = "*.%s" % ("json" if input_format == "json" else "xlsx")
-    files = dpi.FileLister(data_dir, recursive=True, masks=masks)
-    sharded = dpi.ShardingFilter(files)  # remove this if single worker?
-    if shuffle: sharded = dpi.Shuffler(sharded)
+    # Load correct files from a directory
+    if os.path.isdir(data_path):
+        masks = "*.%s" % ("json" if input_format == "json" else "xlsx")
+        files = dpi.FileLister(data_path, recursive=True, masks=masks)
+        sharded = dpi.ShardingFilter(files)  # remove this if single worker?
+        if shuffle: sharded = dpi.Shuffler(sharded)
+    
+    # Load correct file from a file path
+    elif os.path.isfile(data_path):
+        if not data_path.endswith(("json", "xlsx")):
+            raise ValueError("File format not supported")
+        files = dpi.IterableWrapper([data_path])
+    
+    # Handle exception
+    else:
+        raise FileNotFoundError(f"{data_path} is neither a file nor a directory")
     
     # Load data inside each file
     if input_format == "json":

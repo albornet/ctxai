@@ -60,7 +60,6 @@ MODEL_STR_MAP = {
 
 
 # Eligibility criteria dataset parameters
-CSV_FILE_MASK = "*criteria.csv"  # "*criteria.csv", "*example.csv"
 BASE_DATA_DIR = "data"
 RAW_DATA_DIR = os.path.join("data", "raw_files", RAW_INPUT_FORMAT)
 PREPROCESSED_DIR = os.path.join(BASE_DATA_DIR, "preprocessed", RAW_INPUT_FORMAT)
@@ -70,6 +69,7 @@ PREPROCESSED_DATA_HEADERS = [
     "subcontext", "individual criterion",
 ]
 POSTPROCESSED_DIR = os.path.join(BASE_DATA_DIR, "postprocessed", RAW_INPUT_FORMAT)
+PREPROCESSED_FILE_MASK = "*criteria.csv"
 RESULT_DIR = os.path.join("results", RAW_INPUT_FORMAT)
 with open(os.path.join(BASE_DATA_DIR, "mesh_crosswalk_inverted.json"), "r") as f:
     MESH_CROSSWALK_INVERTED = json.load(f)

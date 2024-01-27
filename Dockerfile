@@ -1,24 +1,34 @@
-# Use a Conda-based image as the base
-FROM continuumio/miniconda3
+# Use an nvidia + torch + cuml image as the base
+FROM nvcr.io/nvidia/pytorch:23.12-py3
 
 # Set a working directory
 WORKDIR /app
 
-# Copy the environment setup script and requirements file into the container
-COPY setup_env.sh .
-COPY pip_requirements.txt .
+# Install additional packages
+RUN pip install \
+    torchmetrics==1.2.0 \
+    openpyxl==3.1.2 \
+    openai==1.9.0 \
+    optuna==3.5.0 \
+    transformers==4.37.0 \
+    nltk==3.8.1 \
+    hdbscan==0.8.33 \
+    Flask==3.0.1
 
-# Run the environment setup script
-RUN chmod +x ./setup_env.sh && ./setup_env.sh
+# Install gunicorn
+RUN pip install gunicorn
 
-# Copy the local src directory, drugbank_data, model, pretrained_configs directory, app and wsgi Python files into the container
-COPY src/ /app/src/
+# Copy necessary files and folders
 COPY app.py .
 COPY wsgi.py .
+COPY src ./src
+COPY data/raw_files/ctxai ./data/raw_files/ctxai
 
-# Set the environment variable for Flask to run in production mode and Expose the port the app runs on
+# Set the environment variable for Flask to run in production mode
 ENV FLASK_ENV=production
+
+# Expose the port the app runs on
 EXPOSE 8984
 
-# Command to run the application within the Conda environment
-CMD ["sh", "-c", "source activate ctxai && gunicorn --worker-class gthread --threads 20 -b 0.0.0.0:8984 wsgi:app"]
+# # The code to run when container is started (gunicorn wsgi:app -b 0.0.0.0:8000)
+# CMD ["gunicorn", "-b", "0.0.0.0:8000", "wsgi:app"]

@@ -7,11 +7,13 @@ import logging
 import pandas as pd
 import torch
 import torchdata.datapipes.iter as dpi
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, message="TypedStorage is deprecated")
 import matplotlib.pyplot as plt
 from typing import Union
 from tqdm import tqdm
 from torchdata.datapipes import functional_datapipe
-from torchdata.dataloader2 import DataLoader2, MultiProcessingReadingService
+from torchdata.dataloader2 import DataLoader2, InProcessReadingService
 from transformers import AutoModel, AutoTokenizer
 try:
     from . import config as cfg
@@ -114,7 +116,7 @@ def get_dataset(data_dir, tokenizer):
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
-    ds = dpi.FileLister(data_dir, recursive=True, masks=cfg.CSV_FILE_MASK)\
+    ds = dpi.FileLister(data_dir, recursive=True, masks=cfg.PREPROCESSED_FILE_MASK)\
         .open_files(mode="t", encoding="utf-8")\
         .parse_csv()\
         .sharding_filter()\
@@ -135,7 +137,7 @@ def generate_embeddings(
     logging.info(" --- Running model to generate embeddings")
     model, tokenizer, pooling_fn = get_model_pipeline(model_type)
     ds = get_dataset(input_dir, tokenizer)
-    rs = MultiProcessingReadingService(num_workers=1)  # not so useful in the end
+    rs = InProcessReadingService()
     dl = DataLoader2(ds, reading_service=rs)
     
     # Go through data pipeline

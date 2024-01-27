@@ -4,8 +4,11 @@
 ENV_NAME="ctxai"
 PYTHON_VERSION="3.10"
 
-# Create a new conda environment and activate it
-conda create --name $ENV_NAME python=$PYTHON_VERSION -y
+# Create a new conda environment with cuML and activate it
+# conda create --name $ENV_NAME python=$PYTHON_VERSION -y
+conda create --solver=libmamba -n $ENV_NAME \
+      -c rapidsai -c conda-forge -c nvidia \
+      cuml=23.12 python=$PYTHON_VERSION cuda-version=11.8 -y
 source activate $ENV_NAME
 
 # Check if the activation was successful
@@ -13,15 +16,15 @@ if [ "$CONDA_DEFAULT_ENV" = "$ENV_NAME" ]; then
 
     # Install latest version of pip packages
     pip install -U -r pip_requirements.txt
-
-    # Install cuml last with conda
-    conda install -n $ENV_NAME cuml -c rapidsai -c conda-forge -c nvidia -y
+    pip install gunicorn
+    conda env export > environment_droplet.yml
 
     # Success message
     echo -e "\nSuccessfully installed all packages in $ENV_NAME.\n\
     Don't forget to activate it by using the following command:\n\
     >>> conda activate $ENV_NAME\n"
+
+# Avoid installing anything if still in the base environment
 else
-    # Avoid installing anything if still in the base environment
     echo "Failed to activate the environment. No packages were installed."
 fi
