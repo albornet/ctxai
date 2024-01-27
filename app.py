@@ -7,8 +7,6 @@ from src import parse_data_fn, cluster_data_fn, ClusterOutput, config as cfg
 
 app = Flask(__name__)
 
-HOST_ADDRESS = '0.0.0.0'
-PORT_NUMBER = 8984
 PATH_PREFIX = "/ct-risk/cluster"
 RULE_PATH = "%s/predict" % PATH_PREFIX
 
@@ -66,5 +64,7 @@ def write_json_file(
     
     
 if __name__ == "__main__":
-    app.run(debug=False, host=HOST_ADDRESS, port=PORT_NUMBER)
+    host_address = '0.0.0.0'
+    port_number = 8984
+    app.run(debug=False, host=host_address, port=port_number)
     
