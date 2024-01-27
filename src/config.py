@@ -3,7 +3,6 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 import logging
-import argparse
 import subprocess
 import gc
 import cupy as cp
@@ -21,9 +20,6 @@ def get_gpu_count():
 
 
 # General parameters
-parser = argparse.ArgumentParser()
-parser.add_argument('--hpc', action='store_true', help='Script run on HPC')
-args = parser.parse_args()
 LOAD_PREPROCESSED_DATA = False  # False
 LOAD_EMBEDDINGS = False  # False
 LOAD_REDUCED_EMBEDDINGS = False  # False
@@ -43,7 +39,7 @@ if NUM_PARSE_WORKERS > 0 and RAW_INPUT_FORMAT != "json":
     NUM_PARSE_WORKERS = 0
 
 # Eligibility criteria embedding model parameters
-BATCH_SIZE = 256 if args.hpc else 64
+BATCH_SIZE = 64
 MAX_SELECTED_SAMPLES = 280_000 if RAW_INPUT_FORMAT == "json" else 7_000
 DEVICE = "cuda:0" if NUM_GPUS > 0 else "cpu"
 NUM_STEPS = MAX_SELECTED_SAMPLES // BATCH_SIZE
