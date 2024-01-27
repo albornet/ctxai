@@ -1,6 +1,9 @@
 import logging
 from app import app
 
+HOST_ADDRESS = '0.0.0.0'
+PORT_NUMBER = 8984
+    
 
 def main():
     # Set logging level and format
@@ -10,7 +13,7 @@ def main():
     )
     
     # Run the app
-    app.run()
+    app.run(debug=False, host=HOST_ADDRESS, port=PORT_NUMBER)
 
 
 if __name__ == "__main__":
