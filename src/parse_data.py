@@ -33,7 +33,7 @@ def main():
     raise NotImplementedError
 
 
-def parse_data_fn() -> None:
+def parse_data_fn(raw_data_path: str) -> None:
     """ Parse all CT files into lists of inclusion and exclusion criteria
     """
     # Load parsed data from previous run
@@ -52,7 +52,7 @@ def parse_data_fn() -> None:
             writer.writerow(cfg.PREPROCESSED_DATA_HEADERS)
             
         # Initialize data processors
-        ds = get_dataset(cfg.RAW_DATA_DIR, cfg.RAW_INPUT_FORMAT)
+        ds = get_dataset(raw_data_path, cfg.RAW_INPUT_FORMAT)
         if cfg.NUM_PARSE_WORKERS == 0:
             rs = InProcessReadingService()
         else:
@@ -69,11 +69,7 @@ def parse_data_fn() -> None:
         dl.shutdown()
         
     
-def get_dataset(
-    data_path: str,
-    input_format: str,
-    shuffle: bool=False
-) -> dpi.IterDataPipe:
+def get_dataset(data_path: str, input_format: str) -> dpi.IterDataPipe:
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
@@ -81,8 +77,6 @@ def get_dataset(
     if os.path.isdir(data_path):
         masks = "*.%s" % ("json" if input_format == "json" else "xlsx")
         files = dpi.FileLister(data_path, recursive=True, masks=masks)
-        sharded = dpi.ShardingFilter(files)  # remove this if single worker?
-        if shuffle: sharded = dpi.Shuffler(sharded)
     
     # Load correct file from a file path
     elif os.path.isfile(data_path):
@@ -96,16 +90,17 @@ def get_dataset(
     
     # Load data inside each file
     if input_format == "json":
-        jsons = dpi.FileOpener(sharded, encoding="utf-8")
+        jsons = dpi.FileOpener(files, encoding="utf-8")
         dicts = dpi.JsonParser(jsons)
         raw_samples = ClinicalTrialFilter(dicts)
     elif input_format == "ctxai":
-        raw_samples = CustomXLSXLineReader(sharded)
+        raw_samples = CustomXLSXLineReader(files)
     else:
         raise ValueError("Wrong input format selected.")
         
     # Parse criteria
-    parsed_samples = CriteriaParser(raw_samples)
+    sharded_samples = dpi.ShardingFilter(raw_samples)
+    parsed_samples = CriteriaParser(sharded_samples)
     written = CriteriaCSVWriter(parsed_samples)
     return written
 

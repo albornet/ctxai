@@ -11,4 +11,6 @@ numpy==1.24.4
 hdbscan==0.8.33  # not in nvcr.io/nvidia/pytorch:23.12-py3
 pandas==1.5.3
 matplotlib==3.8.2
+plotly==5.18.0  # not in nvcr.io/nvidia/pytorch:23.12-py3
+kaleido==0.2.1  # not in nvcr.io/nvidia/pytorch:23.12-py3
 Flask==3.0.1  # not in nvcr.io/nvidia/pytorch:23.12-py3

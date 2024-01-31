@@ -8,7 +8,9 @@ import pandas as pd
 import torch
 import torchdata.datapipes.iter as dpi
 import warnings
-warnings.filterwarnings("ignore", category=UserWarning, message="TypedStorage is deprecated")
+warnings.filterwarnings(
+    action="ignore", category=UserWarning, message="TypedStorage is deprecated"
+)
 import matplotlib.pyplot as plt
 from typing import Union
 from tqdm import tqdm
@@ -18,8 +20,9 @@ from transformers import AutoModel, AutoTokenizer
 try:
     from . import config as cfg
     from .cluster_utils import ClusterOutput, report_clusters
-except ImportError:
-    import src.config as cfg
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+except ImportError:  # cluster_data.py file run as a script
+    import config as cfg
     from cluster_utils import ClusterOutput, report_clusters
 
 
@@ -32,23 +35,16 @@ def main():
         level=logging.INFO,
         format="[%(levelname).1s %(asctime)s] %(message)s",
     )
-    
-    # Load final results if required (e.g., just to re-plot them)
-    final_results_path = os.path.join(cfg.RESULT_DIR, "model_comparison.pkl")
-    if cfg.LOAD_FINAL_RESULTS:
-        with open(final_results_path, "rb") as f:
-            cluster_metrics = pickle.load(f)
-    
-    # Or generate results using one model, then save the results
-    else:
-        cluster_metrics = {}
-        for model_type in cfg.MODEL_STR_MAP.keys():
-            logging.info(" - Starting with %s" % model_type)
-            cluster_output = cluster_data_fn(cfg.PREPROCESSED_DIR, model_type)
-            cluster_metrics[model_type] = cluster_output.cluster_metrics
-            logging.info(" - Done with %s" % model_type)
-        with open(final_results_path, "wb") as f:
-            pickle.dump(cluster_metrics, f)
+    # Generate results using one model, then save the results
+    cluster_metrics = {}
+    for model_id in cfg.MODEL_STR_MAP.keys():
+        logging.info(" - Starting with %s" % model_id)
+        cluster_output = cluster_data_fn(
+            model_id=model_id,
+            cluster_summarization_params=cfg.DEFAULT_CLUSTER_SUMMARIZATION_PARAMS,
+        )
+        cluster_metrics[model_id] = cluster_output.cluster_metrics
+        logging.info(" - Done with %s" % model_id)
     
     # Plot final results (comparison of different model embeddings)
     plot_model_comparison(cluster_metrics)
@@ -56,43 +52,54 @@ def main():
 
 
 def cluster_data_fn(
-    input_dir: str,
-    model_type: str | None,
-    cluster_summarization_params: dict[int, Union[int, str]] | None,
+    model_id: str | None,
+    user_id: str | None=None,
+    project_id: str | None=None,
+    cluster_summarization_params: dict[int, Union[int, str]] | None=None,
 ) -> ClusterOutput:
     """ Cluster eligibility criteria using embeddings from one language model
     """
     # Take default model if not provided
-    if model_type is None:
-        model_type = cfg.DEFAULT_MODEL_TYPE
+    if model_id is None:
+        model_id = cfg.DEFAULT_MODEL_ID
         
     # Save / load data
-    logging.info(" - Retrieving elibility criteria embeddings with %s" % model_type)
+    logging.info(" - Retrieving elibility criteria embeddings with %s" % model_id)
     if cfg.LOAD_EMBEDDINGS:
         embeddings, raw_txts, metadatas = load_embeddings(
-            cfg.POSTPROCESSED_DIR, model_type,
+            output_dir=cfg.POSTPROCESSED_DIR, model_id=model_id,
         )
     else:
-        embeddings, raw_txts, metadatas = generate_embeddings(input_dir, model_type)
-        save_data(cfg.POSTPROCESSED_DIR, model_type, embeddings, raw_txts, metadatas)
+        embeddings, raw_txts, metadatas = generate_embeddings(
+            input_dir=cfg.PREPROCESSED_DIR, model_id=model_id,
+        )
+        save_embeddings(
+            output_dir=cfg.POSTPROCESSED_DIR,
+            model_id=model_id,
+            embeddings=embeddings,
+            raw_txts=raw_txts,
+            metadatas=metadatas,
+        )
     
     # Generate clusters and report them as a formatted data structure
     logging.info(" - Running clustering algorithm on eligibility criteria embeddings")
     os.makedirs(cfg.RESULT_DIR, exist_ok=True)
     return report_clusters(
-        model_type=model_type,
+        model_id=model_id,
         raw_data=embeddings,
         raw_txts=raw_txts,
         metadatas=metadatas,
         cluster_summarization_params=cluster_summarization_params,
+        user_id=user_id,
+        project_id=project_id,
     )
     
 
-def get_model_pipeline(model_type):
+def get_model_pipeline(model_id):
     """ Select a model and the corresponding tokenizer and embed function
     """
     # Model generates token-level embeddings, and output [cls] (+ linear + tanh)
-    if "-sentence" not in model_type:
+    if "-sentence" not in model_id:
         def pooling_fn(encoded_input, model_output):
             return model_output["pooler_output"]
         
@@ -106,7 +113,7 @@ def get_model_pipeline(model_type):
             return token_sum / torch.clamp(input_expanded.sum(1), min=1e-9)
             
     # Return model (sent to correct device) and tokenizer
-    model_str = cfg.MODEL_STR_MAP[model_type]
+    model_str = cfg.MODEL_STR_MAP[model_id]
     model = AutoModel.from_pretrained(model_str)
     tokenizer = AutoTokenizer.from_pretrained(model_str)
     return model.to(cfg.DEVICE), tokenizer, pooling_fn
@@ -128,14 +135,14 @@ def get_dataset(data_dir, tokenizer):
 
 def generate_embeddings(
     input_dir: str,
-    model_type: str
+    model_id: str
 ) -> tuple[torch.Tensor, list[str], list[dict]]:
     """ Generate a set of embeddigns from data in a given input directory, using
         a given model
     """
     # Load model and data pipeline
     logging.info(" --- Running model to generate embeddings")
-    model, tokenizer, pooling_fn = get_model_pipeline(model_type)
+    model, tokenizer, pooling_fn = get_model_pipeline(model_id)
     ds = get_dataset(input_dir, tokenizer)
     rs = InProcessReadingService()
     dl = DataLoader2(ds, reading_service=rs)
@@ -169,27 +176,29 @@ def generate_embeddings(
     return embeddings, raw_txts, metadatas
     
 
-def save_data(dir_, model_type, embeddings, raw_txts, labels):
+def save_embeddings(output_dir, model_id, embeddings, raw_txts, metadatas):
     """ Simple saving function for model predictions
     """
-    os.makedirs(dir_, exist_ok=True)
-    torch.save(embeddings, os.path.join(dir_, "embeddings_%s.pt" % model_type))
-    with open(os.path.join(dir_, "raw_txts.pkl"), "wb") as f:
+    os.makedirs(output_dir, exist_ok=True)
+    ckpt_path = os.path.join(output_dir, "embeddings_%s.pt" % model_id)
+    torch.save(embeddings, ckpt_path)
+    with open(os.path.join(output_dir, "raw_txts.pkl"), "wb") as f:
         pickle.dump(raw_txts, f)
-    with open(os.path.join(dir_, "labels.pkl"), "wb") as f:
-        pickle.dump(labels, f)
+    with open(os.path.join(output_dir, "metadatas.pkl"), "wb") as f:
+        pickle.dump(metadatas, f)
 
 
-def load_embeddings(dir_, model_type):
+def load_embeddings(output_dir, model_id):
     """ Simple loading function for model predictions
     """
     logging.info(" --- Loading embeddings from previous run")
-    embeddings = torch.load(os.path.join(dir_, "embeddings_%s.pt" % model_type))
-    with open(os.path.join(dir_, "raw_txts.pkl"), "rb") as f:
+    ckpt_path = os.path.join(output_dir, "embeddings_%s.pt" % model_id)
+    embeddings = torch.load(ckpt_path)
+    with open(os.path.join(output_dir, "raw_txts.pkl"), "rb") as f:
         raw_txts = pickle.load(f)
-    with open(os.path.join(dir_, "labels.pkl"), "rb") as f:
-        labels = pickle.load(f)
-    return embeddings, raw_txts, labels
+    with open(os.path.join(output_dir, "metadatas.pkl"), "rb") as f:
+        metadatas = pickle.load(f)
+    return embeddings, raw_txts, metadatas
 
 
 @functional_datapipe("filter_clinical_trial")
