@@ -40,7 +40,7 @@ def predict():
     # Return jsonified file paths corresponding to the written data and plot
     return jsonify({
         "cluster_json_path": cluster_output.json_path,
-        "cluster_plot_path": cluster_output.plot_path,
+        "cluster_visualization_paths": cluster_output.visualization_paths,
     })
 
     
