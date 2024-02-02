@@ -1,5 +1,11 @@
 # Mains
 import os
+import logging
+logger = logging.getLogger("cluster")
+try:
+    from . import config as cfg
+except ImportError:
+    import config as cfg
 import time
 import csv
 import json
@@ -8,11 +14,6 @@ import pandas as pd
 import numpy as np
 import torch
 import plotly.express as px
-import logging
-try:
-    from . import config as cfg
-except ImportError:
-    import config as cfg
 
 # Utils
 from scipy.spatial.distance import squareform
@@ -51,7 +52,6 @@ from cuml.metrics.cluster import silhouette_score
 from torchmetrics.clustering import DunnIndex
 from sklearn.metrics import (
     davies_bouldin_score,
-    calinski_harabasz_score,
     mutual_info_score,
     adjusted_mutual_info_score,
     adjusted_rand_score,
@@ -62,7 +62,6 @@ from sklearn.metrics import (
 from cuml.common import logger as cuml_logger
 cuml_logger.set_level(cuml_logger.level_error)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-logger = logging.getLogger("cluster")
 
 
 @dataclass
@@ -413,8 +412,10 @@ def report_clusters(
         and log a scatter plot of the low-dimensional data to tensorboard
     """
     # Reduce data dimensionality
-    logger.info(" --- Reducing dimensionality of %s criteria embeddings" % len(raw_data))
-    plot_data, cluster_data = get_plot_and_cluster_data(raw_data, model_id)
+    logger.info(" --- Reducing %s criteria embeddings dimensionality" % len(raw_data))
+    plot_data, cluster_data = get_plot_and_cluster_data(
+        raw_data, model_id, cluster_summarization_params
+    )
     
     # Build token information
     logger.info(" --- Collecting criteria texts, labels, and embeddings")
@@ -481,14 +482,17 @@ def get_token_info(
 def get_plot_and_cluster_data(
     data: torch.Tensor,
     model_id: str,
+    cluster_summarization_params: dict,
 ) -> tuple[np.ndarray, np.ndarray]:
     """ Compute low-dimensional plot and cluster data using dimensionality
         reduction algorithm, or load already computed results 
     """
-    # Retrieve save or load paths for cluster data and plot data
+    # Retrieve data paths and parameters
     base_name = "embeddings_%s.pkl" % model_id
     load_path_cluster = os.path.join(cfg.POSTPROCESSED_DIR, "plotted_%s" % base_name)
     load_path_plot = os.path.join(cfg.POSTPROCESSED_DIR, "reduced_%s" % base_name)
+    cluster_red_dim = cluster_summarization_params["cluster_red_dim"]
+    plot_red_dim = cluster_summarization_params["plot_red_dim"]
     
     # Load already computed data with reduced dimensionality
     if cfg.LOAD_REDUCED_EMBEDDINGS:
@@ -505,18 +509,18 @@ def get_plot_and_cluster_data(
         logger.info(" ----- Running %s algorithm" % cfg.CLUSTER_DIM_RED_ALGO)
         cluster_data = compute_reduced_repr(
             data.numpy(),  # data is torch tensor
-            reduced_dim=cfg.CLUSTER_RED_DIM,
+            reduced_dim=cluster_red_dim,
             algorithm=cfg.CLUSTER_DIM_RED_ALGO,
         )
         
         # Compute reduced representation for plotting
-        if cfg.CLUSTER_RED_DIM == cfg.PLOT_RED_DIM\
+        if cluster_red_dim == plot_red_dim \
         and cfg.CLUSTER_DIM_RED_ALGO == cfg.PLOT_DIM_RED_ALGO:
             plot_data = cluster_data
         else:
             plot_data = compute_reduced_repr(
                 cluster_data,  # data.numpy()?
-                reduced_dim=cfg.PLOT_RED_DIM,
+                reduced_dim=plot_red_dim,
                 algorithm=cfg.PLOT_DIM_RED_ALGO,
             )
         

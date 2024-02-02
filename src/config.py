@@ -85,8 +85,6 @@ STATUS_MAP = None
 # Dimensionality reduction parameters
 CLUSTER_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
-CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
-PLOT_RED_DIM = 2  # either 2 or 3
 N_ITER_MAX_TSNE = 10_000
 REPRESENTATION_METRIC = None  # None, "correlation", "euclidean"
 
@@ -123,8 +121,10 @@ DEFAULT_CLUSTERING_PARAMS = {
 
 # Default parameters for cluster title generation
 DEFAULT_CLUSTER_SUMMARIZATION_PARAMS = {
+    "plot_red_dim": 2,  # data dimensionality for data visualization; either 2 or 3
+    "cluster_red_dim": 2,  # data dimensionality for clustering algorithm; None for no reduction
     "method": "gpt",  # "closest", "shortest", "gpt"
-    "n_representants": 20,
+    "n_representants": 20,  # cluster titles generated from n_representants samples closest to cluster medoid
     "gpt_system_prompt": " ".join([  # only used if method == gpt
         "You are an expert in the fields of clinical trials and eligibility criteria.",
         "You express yourself succintly, i.e., less than 5 words per response.",

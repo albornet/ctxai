@@ -41,6 +41,7 @@ def predict():
     return jsonify({
         "cluster_json_path": cluster_output.json_path,
         "cluster_visualization_paths": cluster_output.visualization_paths,
+        "cluster_raw_ec_list_path": cluster_output.raw_ec_list_path,
     })
 
     

@@ -1,9 +1,23 @@
 import os
+import sys
+import logging
+logger = logging.getLogger("cluster")
+try:
+    from . import config as cfg
+    from .cluster_utils import ClusterOutput, report_clusters
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+except ImportError:  # cluster_data.py file run as a script
+    import config as cfg
+    from cluster_utils import ClusterOutput, report_clusters
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter("[%(levelname).1s %(asctime)s] %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 import ast
 import pickle
 import glob
 import shutil
-import logging
 import pandas as pd
 import torch
 import torchdata.datapipes.iter as dpi
@@ -17,21 +31,6 @@ from tqdm import tqdm
 from torchdata.datapipes import functional_datapipe
 from torchdata.dataloader2 import DataLoader2, InProcessReadingService
 from transformers import AutoModel, AutoTokenizer
-try:
-    from . import config as cfg
-    from .cluster_utils import ClusterOutput, report_clusters
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    logger = logging.getLogger("cluster")
-except ImportError:  # cluster_data.py file run as a script
-    import sys
-    import config as cfg
-    from cluster_utils import ClusterOutput, report_clusters
-    logger = logging.getLogger("cluster")
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter("[%(levelname).1s %(asctime)s] %(message)s")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
 
 
 def main():
