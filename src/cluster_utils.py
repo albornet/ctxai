@@ -1,13 +1,13 @@
 # Mains
 import os
 import time
+import csv
 import json
 import pickle
 import pandas as pd
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-import plotly.graph_objects as go
+import plotly.express as px
 import logging
 try:
     from . import config as cfg
@@ -17,7 +17,6 @@ except ImportError:
 # Utils
 from scipy.spatial.distance import squareform
 from cupyx.scipy.spatial.distance import cdist, pdist
-from scipy.optimize import linear_sum_assignment
 from sklearn.preprocessing import LabelEncoder
 from itertools import product
 from typing import Union
@@ -43,14 +42,16 @@ from optuna.samplers import TPESampler
 from dask_cuda import LocalCUDACluster
 from dask.distributed import Client
 from cuml.cluster import hdbscan
-from cuml.decomposition import PCA
-from cuml.manifold import TSNE
+from cuml.decomposition import PCA as CUML_PCA
+from cuml.manifold import TSNE as CUML_TSNE
+from sklearn.manifold import TSNE as SKLEARN_TSNE
 
 # Metrics
 from cuml.metrics.cluster import silhouette_score
 from torchmetrics.clustering import DunnIndex
 from sklearn.metrics import (
     davies_bouldin_score,
+    calinski_harabasz_score,
     mutual_info_score,
     adjusted_mutual_info_score,
     adjusted_rand_score,
@@ -61,8 +62,7 @@ from sklearn.metrics import (
 from cuml.common import logger as cuml_logger
 cuml_logger.set_level(cuml_logger.level_error)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("requests").setLevel(logging.WARNING)
+logger = logging.getLogger("cluster")
 
 
 @dataclass
@@ -120,7 +120,8 @@ class ClusterOutput:
     unique_id: str
     cluster_metrics: dict[str, float]
     cluster_instances: list[ClusterInstance]
-    plot_path: str
+    visualization_paths: dict[str, dict[str, str]]
+    raw_ec_list_path: str
     json_path: str
     
     def __init__(
@@ -141,7 +142,8 @@ class ClusterOutput:
         self.cluster_instances = self.get_cluster_instances(
             token_info=token_info, cluster_info=cluster_info,
         )
-        self.plot_clusters()  # sets self.plot_path
+        self.plot_clusters()
+        self.write_raw_ec_list()  # sets self.raw_ec_list_path
         self.write_to_json()  # sets self.json_path
     
     @staticmethod
@@ -166,72 +168,151 @@ class ClusterOutput:
                     reduced_data=token_info["plot_data"][member_ids],
                 )
             )
-            
-        return cluster_instances
+        
+        # Function sorting clusters by number of samples, and with "-1" last
+        def custom_sort_key(cluster_instance):
+            if cluster_instance.cluster_id == -1:
+                return 0  # to go to the last position
+            return cluster_instance.n_samples  # sort by number of samples
+            # return cluster_instance.prevalence  # sort by prevalence
+        
+        # Return customly sorted cluster instances
+        return sorted(cluster_instances, key=custom_sort_key, reverse=True)
     
     def plot_clusters(self, font_size: float=21.0) -> None:
-        """ Plot the top 20 instances of empirical clusters (skipping undefined cluster)
+        """ Plot clusters as a coloured scatter plot. If top_20 is True, only
+            the 20 largest clusters are plotted, skipping the "-1" cluster.
         """
-        # Retrieve top-20 data and titles and format them for plotly.scatter
-        defined_cluster = [c for c in self.cluster_instances if c.cluster_id != -1]
-        top_20_clusters = sorted(defined_cluster, key=lambda x: x.n_samples, reverse=True)[:20]
-        ys, xs, titles = [], [], []
-        legend_line_count = 0
-        for cluster in top_20_clusters:
-            title, title_line_count = self.format_title_for_legend(cluster.title)
-            legend_line_count += title_line_count
-            for ec in cluster.ec_list:
-                xs.append(ec.reduced_embedding[0])
-                ys.append(ec.reduced_embedding[1])
-                titles.append(title)
-        plot_df = pd.DataFrame({"x": xs, "y": ys, "title": titles})
-        
-        # Plot cluster data
-        fig = go.Figure()
-        for k, title in enumerate(plot_df["title"].unique()):
-            cluster_df = plot_df[plot_df["title"] == title]
-            symbol = ["circle", "x"][int(k >= 10)]
-            fig.add_scatter(
-                x=cluster_df["x"], y=cluster_df["y"], name=title,
-                opacity=0.8, mode="markers", marker_symbol=symbol,
+        # Generate a visualization for top_20 clusters and all clusters
+        self.visualization_paths = {"top_20": {}, "all": {}}
+        for top_20 in [True, False]:
+            
+            # Retrieve cluster data (clusters are already sorted by n_sample)
+            clusters = [c for c in self.cluster_instances]  # if c.cluster_id != -1]
+            symbol_seq = ["circle", "square", "diamond", "x"]
+            size_seq = [1.0, 0.7, 0.7, 0.5]
+            symbol_map = {k: symbol_seq[k % len(symbol_seq)] for k in range(100)}
+            size_map = {k: size_seq[k % len(size_seq)] for k in range(100)}
+            plotly_colors = px.colors.qualitative.Plotly
+            if top_20: clusters = clusters[:20]
+            
+            # Format data for dataframe
+            ys, xs, zs, raw_texts = [], [], [], []
+            labels, hover_names, ids, symbols, sizes = [], [], [], [], []
+            color_map = {}
+            legend_line_count = 0
+            for k, cluster in enumerate(clusters):
+                
+                # Cluster data
+                label, label_line_count = self.format_text(cluster.title)
+                legend_line_count += label_line_count
+                labels.extend([label] * len(cluster.ec_list))
+                ids.extend([cluster.cluster_id] * len(cluster.ec_list))
+                hover_names.extend([self.format_text(
+                    cluster.title, max_length=40, max_line_count=10
+                )[0]] * len(cluster.ec_list))
+                
+                # Eligibility criteria data
+                xs.extend([ec.reduced_embedding[0] for ec in cluster.ec_list])
+                ys.extend([ec.reduced_embedding[1] for ec in cluster.ec_list])
+                if len(cluster.ec_list[0].reduced_embedding) > 2:
+                    zs.extend([ec.reduced_embedding[2] for ec in cluster.ec_list])
+                raw_texts.extend([self.format_text(
+                    ec.raw_text, max_length=35, max_line_count=10
+                )[0] for ec in cluster.ec_list])
+                
+                # Eligibility criteria markers
+                symbol = k // 10 if cluster.cluster_id != -1 else 0
+                symbols.extend([symbol] * len(cluster.ec_list))
+                size = size_map[k // 10] if cluster.cluster_id != -1 else 0.1
+                sizes.extend([size] * len(cluster.ec_list))
+                color = plotly_colors[k % 10] if cluster.cluster_id != -1 else "white"
+                color_map[label] = color
+                
+            # Build dataframe for plotly.scatter
+            plot_df = pd.DataFrame({
+                "x": xs, "y": ys, "raw_text": raw_texts, "label": labels,
+                "id": ids,  "hover_name": hover_names, "symbol": symbols,
+                "size": sizes,
+            })
+            if len(zs) > 0:
+                plot_df["z"] = zs
+            
+            # Plot cluster data using px.scatter
+            hover_data = {
+                "label": False, "hover_name": False, "raw_text": True,
+                "symbol": False, "size": False, "x": ":.2f", "y": ":.2f",
+            }
+            if len(zs) == 0:
+                fig = px.scatter(
+                    plot_df, x="x", y="y", opacity=1.0,
+                    color="label", color_discrete_map=color_map,
+                    labels={"label": "Cluster labels"}, size="size",
+                    symbol="symbol", symbol_map=symbol_map,
+                    hover_name="label", hover_data=hover_data,
+                )
+            else:
+                hover_data.update({"z": ":.2f"})
+                fig = px.scatter_3d(
+                    plot_df, x="x", y="y", z="z", opacity=1.0,
+                    color="label", color_discrete_map=color_map,
+                    labels={"label": "Cluster labels"}, size="size",
+                    symbol="symbol", symbol_map=symbol_map,
+                    hover_name="hover_name", hover_data=hover_data,
+                )
+            
+            # Polish figure
+            width, height = (1540, 720) if top_20 else (720, 720)
+            legend_font_size = max(1, font_size * 20 / legend_line_count)
+            fig.update_traces(
+                marker=dict(line=dict(color="black", width=1)),
             )
-        
-        # Polish figure
-        fig.update_traces(marker=dict(
-            size=font_size / 2,
-            line=dict(color="black", width=1)
-        ))
-        fig.update_xaxes(
-            title_text="tSNE-1", linecolor="black", linewidth=0.5,
-            title_font=dict(size=font_size, family="TeX Gyre Pagella"),
-            tickfont=dict(size=font_size, family="TeX Gyre Pagella")
-        )
-        fig.update_yaxes(
-            title_text="tSNE-2", linecolor="black", linewidth=0.5,
-            title_font=dict(size=font_size, family="TeX Gyre Pagella"),
-            tickfont=dict(size=font_size, family="TeX Gyre Pagella")
-        )
-        width, height = 1440, 720
-        legend_font_size = max(1, font_size * 20 / legend_line_count)
-        fig.update_layout(
-            legend=dict(
-                yanchor="auto", xanchor="left", title_text="",
-                font=dict(size=legend_font_size, family="TeX Gyre Pagella"),
-            ),
-            width=width, height=height, plot_bgcolor="white",
-            margin=dict(l=60, r=width * 0.45, t=30, b=80),
-        )
-        
-        # Save image and sets plot_path
-        plot_name = "%s_cluster_plot.png" % self.unique_id
-        plot_path = os.path.join(cfg.RESULT_DIR, plot_name)
-        fig.write_image(plot_path, engine="kaleido",scale=2)
-        self.plot_path = plot_path
-    
+            fig.update_xaxes(
+                title_text="tSNE-1", linecolor="black", linewidth=0.5,
+                title_font=dict(size=font_size, family="TeX Gyre Pagella"),
+                tickfont=dict(size=font_size, family="TeX Gyre Pagella")
+            )
+            fig.update_yaxes(
+                title_text="tSNE-2", linecolor="black", linewidth=0.5,
+                title_font=dict(size=font_size, family="TeX Gyre Pagella"),
+                tickfont=dict(size=font_size, family="TeX Gyre Pagella")
+            )
+            fig.update_layout(
+                width=width, height=height, plot_bgcolor="white",
+                margin=dict(l=20, r=width * 0.45, t=20, b=20),
+                legend=dict(
+                    yanchor="middle", y=0.5, xanchor="left",
+                    title_text="", itemsizing="constant",
+                    font=dict(size=legend_font_size, family="TeX Gyre Pagella"),
+                )
+            )
+            if top_20:
+                for trace in fig.data:
+                    trace.name = trace.name.replace(', 0', '').replace(', 1', '')
+            else:
+                fig.update_layout(
+                    margin=dict(l=20, r=20, t=20, b=20),
+                    showlegend=False,
+                )
+            
+            # Save image and sets plot_path
+            plot_tag = "top_20" if top_20 else "all"
+            plot_name = "%s_cluster_plot_%s.png" % (self.unique_id, plot_tag)
+            plot_path = os.path.join(cfg.RESULT_DIR, plot_name)
+            html_path = plot_path.replace("png", "html")
+            fig.write_image(plot_path, engine="kaleido", scale=2)
+            fig.write_html(html_path)
+            if top_20:
+                self.visualization_paths["top_20"]["png"] = plot_path
+                self.visualization_paths["top_20"]["html"] = html_path
+            else:
+                self.visualization_paths["all"]["png"] = plot_path
+                self.visualization_paths["all"]["html"] = html_path
+
     @staticmethod
-    def format_title_for_legend(
+    def format_text(
         title: str,
-        max_length: int=75,
+        max_length: int=100,
         max_line_count: int=2
     ) -> tuple[str, int]:
         """ Try to format the title in the legend of the ctxai cluster plot
@@ -281,11 +362,35 @@ class ClusterOutput:
         # Save data as a json file
         cluster_output_dict = asdict(self)
         json_data = json.dumps(cluster_output_dict, indent=4)
-        with open(json_path, 'w') as file:
+        with open(json_path, "w") as file:
             file.write(json_data)
+    
+    def write_raw_ec_list(self) -> str:
+        """ Generate a raw list of criteria grouped by cluster
+        """
+        # Define file name and sets json_path
+        file_name = "%s_raw_ec_list.csv" % self.unique_id
+        raw_ec_list_path = os.path.join(cfg.RESULT_DIR, file_name)
+        self.raw_ec_list_path = raw_ec_list_path
+        
+        # Open the CSV file in write mode
+        with open(raw_ec_list_path, "w", newline="", encoding="utf-8") as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerow([
+                "Cluster id", "Cluster prevalence",
+                "Cluster Title", "Eligibility Criteria",
+            ])
             
-            
-            
+            # Iterate through ClusterOutput objects and their ClusterInstances
+            for cluster_instance in self.cluster_instances:
+                title = cluster_instance.title
+                cluster_id = cluster_instance.cluster_id
+                prevalence = cluster_instance.prevalence
+                for ec_data in cluster_instance.ec_list:
+                    ec_text = ec_data.raw_text
+                    csv_writer.writerow([cluster_id, prevalence, title, ec_text])
+
+
 @cfg.clean_memory()
 def report_clusters(
     model_id: str,
@@ -301,37 +406,37 @@ def report_clusters(
         and log a scatter plot of the low-dimensional data to tensorboard
     """
     # Reduce data dimensionality
-    logging.info(" --- Reducing dimensionality of %s criteria embeddings" % len(raw_data))
+    logger.info(" --- Reducing dimensionality of %s criteria embeddings" % len(raw_data))
     plot_data, cluster_data = get_plot_and_cluster_data(raw_data, model_id)
     
     # Build token information
-    logging.info(" --- Collecting criteria texts, labels, and embeddings")
+    logger.info(" --- Collecting criteria texts, labels, and embeddings")
     token_info = get_token_info(
         raw_txts, raw_data, plot_data, model_id, label_type, metadatas,
     )
     
     # Look for best set of hyper-parameters for clustering
-    logging.info(" --- Retrieving best clustering hyper-parameters")
+    logger.info(" --- Retrieving best clustering hyper-parameters")
     params = find_best_cluster_params(cluster_data, model_id)
     
     # Proceed to clustering with the best set of hyper-parameters
-    logging.info(" --- Clustering criteria with best set of hyper-parameters")
+    logger.info(" --- Clustering criteria with best set of hyper-parameters")
     cluster_info = cluster_criteria(params, cluster_data, model_id)
     
     # Perform label-free and label-dependent evaluation of clustering
-    logging.info(" --- Evaluating cluster quality")
+    logger.info(" --- Evaluating cluster quality")
     evaluate_clustering(cluster_info, metadatas)
     
     # Compute useful statistics and metrics
-    logging.info(" --- Computing cluster statistics")
+    logger.info(" --- Computing cluster statistics")
     compute_cluster_statistics(token_info, cluster_info)
     
     # Identify one "typical" criterion string for each cluster of criteria
-    logging.info(" --- Generating cluster titles")
+    logger.info(" --- Generating cluster titles")
     compute_cluster_titles(token_info, cluster_info, cluster_summarization_params)
     
     # Generate formatted output as a dedicated dataclass
-    logging.info(" --- Formatting cluster output and plotting data")
+    logger.info(" --- Formatting cluster output and plotting data")
     cluster_output = ClusterOutput(
         token_info=token_info, cluster_info=cluster_info,
         user_id=user_id, project_id=project_id,
@@ -380,7 +485,7 @@ def get_plot_and_cluster_data(
     
     # Load already computed data with reduced dimensionality
     if cfg.LOAD_REDUCED_EMBEDDINGS:
-        logging.info(" ----- Loading reduced data from previous run")
+        logger.info(" ----- Loading reduced data from previous run")
         with open(load_path_cluster, "rb") as f_cluster:
             cluster_data = pickle.load(f_cluster)
         with open(load_path_plot, "rb") as f_plot:
@@ -390,7 +495,7 @@ def get_plot_and_cluster_data(
     else:
         
         # Compute reduced representation for clustering
-        logging.info(" ----- Running %s algorithm" % cfg.CLUSTER_DIM_RED_ALGO)
+        logger.info(" ----- Running %s algorithm" % cfg.CLUSTER_DIM_RED_ALGO)
         cluster_data = compute_reduced_repr(
             data.numpy(),  # data is torch tensor
             reduced_dim=cfg.CLUSTER_RED_DIM,
@@ -435,13 +540,13 @@ def compute_reduced_repr(
         original_dim = data.shape[1]
         data = squareform(pdist(data, "correlation").get())
         params = {"n_components": original_dim}
-        pca = PCA(**params)
+        pca = CUML_PCA(**params)
         data = pca.fit_transform(data)
         
     # Simple PCA algorithm
     if algorithm == "pca":
         params = {"n_components": reduced_dim}
-        pca = PCA(**params)
+        pca = CUML_PCA(**params)
         return pca.fit_transform(data)
     
     # More computationally costly t-SNE algorithm
@@ -455,7 +560,7 @@ def compute_reduced_repr(
             "learning_rate": 200.0,
             "verbose": cuml_logger.level_error,
         }
-        if data.shape[0] < 36_000:
+        if data.shape[0] < 36_000 and reduced_dim == 2:
             n_neighbors = min(int(data.shape[0] / 400 + 1), 90)
             cuml_specific_params = {
                 "n_neighbors": n_neighbors,  # CannyLabs CUDA-TSNE default is 32
@@ -463,7 +568,10 @@ def compute_reduced_repr(
                 "learning_rate_method": "none",  # not in sklearn and produces bad results
             }
             params.update(cuml_specific_params)
-        tsne = TSNE(**params)
+        if reduced_dim == 2:
+            tsne = CUML_TSNE(**params)
+        else:
+            tsne = SKLEARN_TSNE(**params)  # cuml_tsne only available for dim = 2
         return tsne.fit_transform(data)
 
 
@@ -501,23 +609,23 @@ def find_best_cluster_params(data: np.ndarray, model_id: str) -> dict:
     # Try to load best hyper-parameters and return defaults otherwise
     params_path = os.path.join(cfg.RESULT_DIR, "params_%s.json" % model_id)
     if cfg.LOAD_OPTUNA_RESULTS:
-        logging.info(" ----- Loading best hyper-parameters from previous optuna study")
+        logger.info(" ----- Loading best hyper-parameters from previous optuna study")
         try:
             with open(params_path, "r") as file:
                 return json.load(file)
         except FileNotFoundError:
-            logging.warning(" ----- Parameters not found, using default parameters")
+            logger.warning(" ----- Parameters not found, using default parameters")
             return cfg.DEFAULT_CLUSTERING_PARAMS
         
     # Find and save best hyper-parameters
     else:
-        logging.info(" ----- Running optuna study to find best hyper-parameters")
+        logger.info(" ----- Running optuna study to find best hyper-parameters")
         with LocalCUDACluster(
             n_workers=cfg.NUM_OPTUNA_WORKERS,
             threads_per_worker=cfg.NUM_OPTUNA_THREADS,
             processes=True,
         ) as cluster:
-            logging.info(" ----- %s created for study" % cluster)
+            logger.info(" ----- %s created for study" % cluster)
             with Client(cluster, timeout="120s") as client:
                 db_path = "sqlite:///%s/optuna_%s.db" % (cfg.RESULT_DIR, model_id)
                 study = optuna.create_study(
@@ -533,7 +641,7 @@ def find_best_cluster_params(data: np.ndarray, model_id: str) -> dict:
                 )
                 best_params = study.best_params
         
-        logging.info(" ----- Best hyper-parameters: %s" % best_params)
+        logger.info(" ----- Best hyper-parameters: %s" % best_params)
         with open(params_path, "w") as file:
             json.dump(best_params, file, indent=4)
         return best_params
@@ -543,21 +651,25 @@ def objective_fn(trial: optuna.Trial, data: np.ndarray) -> float:
     """ Suggest a new set of hyper-parameters and compute associated metric
     """
     # Perform clustering with a new set of suggested parameters
-    params = suggest_parameters(trial)  # if isinstance(data, FutureArrayClass): data = data.result()
+    params = suggest_parameters(trial)
     try:
         cluster_info = clusterize(data=data, mode="primary", params=params)
         if cluster_info["n_clusters"] > 1 and cfg.DO_SUBCLUSTERIZE:
             cluster_info = subclusterize(cluster_info, params=params)
     except Exception:
-        logging.error("Error during clustering. Skipping to next trial.")
+        logger.error("Error during clustering. Skipping to next trial.")
         return float("-inf")
     
     # Compute metric with clustering results
     if 1 < cluster_info["n_clusters"] < cfg.N_CLUSTER_MAX:
         cluster_lbls = cluster_info["cluster_ids"]
-        metric_1 = silhouette_score(data, cluster_lbls, chunksize=20_000)
-        metric_2 = 1.0 - np.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
-        return metric_1 + metric_2
+        metric = 0.0
+        metric += silhouette_score(data, cluster_lbls, chunksize=20_000)
+        # metric += 1.0 - davies_bouldin_score(data, cluster_lbls)
+        # metric += 0.001 * calinski_harabasz_score(data, cluster_lbls)
+        no_lbl_prop = np.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
+        metric += 1.0 * (1.0 - no_lbl_prop)
+        return metric
     else:
         return float("-inf")
     
@@ -590,6 +702,8 @@ def set_cluster_params(n_samples: int, mode: str, params: dict) -> dict:
     max_cluster_size = params["max_cluster_size_%s" % mode]
     min_cluster_size = params["min_cluster_size_%s" % mode]
     min_samples = params["min_samples_%s" % mode]
+    cluster_selection_method = params["cluster_selection_method_%s" % mode]
+    alpha = params["alpha_%s" % mode]
     
     # Adapter function (int vs float, min and max values)
     default_max_value = n_samples - 1
@@ -599,8 +713,8 @@ def set_cluster_params(n_samples: int, mode: str, params: dict) -> dict:
     
     # Return all selected cluster parameters
     return {
-        "cluster_selection_method": params["cluster_selection_method"],
-        "alpha": params["alpha"],
+        "cluster_selection_method": cluster_selection_method,
+        "alpha": alpha,
         "allow_single_cluster": True,
         "max_cluster_size": adapt_param_fn(max_cluster_size, 100),
         "min_cluster_size": adapt_param_fn(min_cluster_size, 10),
@@ -806,73 +920,89 @@ def dunn_index(cluster_data: np.ndarray, cluster_lbls: np.ndarray) -> float:
     return metric.item()
 
 
-def compute_cluster_titles(token_info: dict,
-    cluster_info,
+def compute_cluster_titles(
+    token_info: dict,
+    cluster_info: dict,
     cluster_summarization_params: dict[str, Union[int, str]] | None=None,
 ) -> dict[int, str]:
     """ For each cluster, summarize all belonging criteria to a single sentence
     """
-    # Compute clusters sorted by distance to the cluster medoid
-    sorted_txts_grouped_by_cluster = {
-        cluster_id: [token_info["raw_txts"][i] for i in sample_ids]
-        for cluster_id, sample_ids in cluster_info["sorted_member_ids"].items()
-    }
-
-    # Take default clusterization parameters if not provided
-    if cluster_summarization_params is None:
-        cluster_summarization_params = cfg.DEFAULT_CLUSTER_SUMMARIZATION_PARAMS
+    # Load already computed cluster titles
+    load_name = "cluster_titles_%s.pkl" % token_info["model_id"]
+    load_path = os.path.join(cfg.POSTPROCESSED_DIR, load_name)
+    if cfg.LOAD_CLUSTER_TITLES:
+        with open(load_path, "rb") as f:
+            cluster_titles = pickle.load(f)
     
-    # Load N closest to medoid representants for each clusters
-    n_representants = cluster_summarization_params["n_representants"]
-    cluster_txts = {
-        cluster_id: txts[:n_representants]
-        for cluster_id, txts in sorted_txts_grouped_by_cluster.items()
-    }
-    cluster_txts[-1] = ["criterion with undefined cluster"] * n_representants
-    
-    # Take the criterion closest to the cluster medoid
-    if cluster_summarization_params["method"] == "closest":
-        cluster_titles = {
-            cluster_id: txts[0] for cluster_id, txts in cluster_txts.items()
-        }
-    
-    # Take shortest from the 10 criteria closest to the cluster medoid
-    elif cluster_summarization_params["method"] == "shortest":
-        cluster_titles = {
-            cluster_id: min(txts, key=len)
-            for cluster_id, txts in cluster_txts.items()
-        }
-    
-    # Use GPT-3.5 to summarize the 10 criteria closest to the cluster medoid
-    elif cluster_summarization_params["method"] == "gpt":
-        # Authentificate with a valid api-key
-        api_path = os.path.join("data", "api-key-risklick.txt")
-        try:
-            with open(api_path, "r") as f: api_key = f.read()
-        except:
-            raise FileNotFoundError("You must have an api-key at %s" % api_path)
-        client = openai.OpenAI(api_key=api_key)
-        
-        # Prompt the model and collect answer for each criterion
-        cluster_titles = {}
-        prompt_loop = tqdm(cluster_txts.items(), "Prompting GPT to summarize clusters")
-        for cluster_id, cluster_criteria in prompt_loop:
-            user_prompt = \
-                cluster_summarization_params["gpt_user_prompt_intro"] + \
-                "\n".join(cluster_criteria)
-            response = prompt_gpt(
-                client=client,
-                system_prompt=cluster_summarization_params["gpt_system_prompt"],
-                user_prompt=user_prompt,
-            )
-            post_processed = "criterion - ".join(
-                [s.capitalize() for s in response.split("criterion - ")]
-            )
-            cluster_titles[cluster_id] = post_processed.replace("\n", " ")
-            
-    # Handle wrong method name
+    # Generate cluster titles using the method provided by summarization parameters
     else:
-        raise ValueError("Wrong pooling method selected.")
+        
+        # Compute clusters sorted by distance to the cluster medoid
+        sorted_txts_grouped_by_cluster = {
+            cluster_id: [token_info["raw_txts"][i] for i in sample_ids]
+            for cluster_id, sample_ids in cluster_info["sorted_member_ids"].items()
+        }
+
+        # Take default clusterization parameters if not provided
+        if cluster_summarization_params is None:
+            cluster_summarization_params = cfg.DEFAULT_CLUSTER_SUMMARIZATION_PARAMS
+        
+        # Load N closest to medoid representants for each clusters
+        n_representants = cluster_summarization_params["n_representants"]
+        cluster_txts = {
+            cluster_id: txts[:n_representants]
+            for cluster_id, txts in sorted_txts_grouped_by_cluster.items()
+        }
+        cluster_txts[-1] = ["criterion with undefined cluster"] * n_representants
+        
+        # Take the criterion closest to the cluster medoid
+        if cluster_summarization_params["method"] == "closest":
+            cluster_titles = {
+                cluster_id: txts[0] for cluster_id, txts in cluster_txts.items()
+            }
+        
+        # Take shortest from the 10 criteria closest to the cluster medoid
+        elif cluster_summarization_params["method"] == "shortest":
+            cluster_titles = {
+                cluster_id: min(txts, key=len)
+                for cluster_id, txts in cluster_txts.items()
+            }
+        
+        # Use GPT-3.5 to summarize the 10 criteria closest to the cluster medoid
+        elif cluster_summarization_params["method"] == "gpt":
+            
+            # Authentificate with a valid api-key
+            api_path = os.path.join("data", "api-key-risklick.txt")
+            try:
+                with open(api_path, "r") as f: api_key = f.read()
+            except:
+                raise FileNotFoundError("You must have an api-key at %s" % api_path)
+            client = openai.OpenAI(api_key=api_key)
+            
+            # Prompt the model and collect answer for each criterion
+            cluster_titles = {}
+            prompt_loop = tqdm(cluster_txts.items(), "Prompting GPT to summarize clusters")
+            for cluster_id, cluster_criteria in prompt_loop:
+                user_prompt = \
+                    cluster_summarization_params["gpt_user_prompt_intro"] + \
+                    "\n".join(cluster_criteria)
+                response = prompt_gpt(
+                    client=client,
+                    system_prompt=cluster_summarization_params["gpt_system_prompt"],
+                    user_prompt=user_prompt,
+                )
+                post_processed = "criterion - ".join(
+                    [s.capitalize() for s in response.split("criterion - ")]
+                )
+                cluster_titles[cluster_id] = post_processed.replace("\n", " ")
+                
+        # Handle wrong method name
+        else:
+            raise ValueError("Wrong pooling method selected.")
+        
+        # Save cluster titles
+        with open(load_path, "wb") as f:
+            pickle.dump(cluster_titles, f)
     
     # Update main cluster info dict with generated cluster titles
     cluster_info.update({"titles": cluster_titles})
@@ -900,7 +1030,7 @@ def prompt_gpt(
         
         except (RateLimitError, ConnectionError, OpenAIError, APIError,
                 APIStatusError, APITimeoutError, APIConnectionError) as e:
-            logging.error("An error occurred: %s. Retrying in %i seconds." % (e, 2 ** i))
+            logger.error("An error occurred: %s. Retrying in %i seconds." % (e, 2 ** i))
             time.sleep(2 ** i)
             
     return "No response, open-ai reached rate limit or another network issue occurred."

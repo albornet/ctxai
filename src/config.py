@@ -1,7 +1,5 @@
 import os
 import json
-import numpy as np
-import matplotlib.pyplot as plt
 import subprocess
 import gc
 import cupy as cp
@@ -19,11 +17,12 @@ def get_gpu_count():
 
 
 # General parameters
-LOAD_PREPROCESSED_DATA = True  # False
-LOAD_EMBEDDINGS = True  # False
-LOAD_REDUCED_EMBEDDINGS = True  # False
-LOAD_OPTUNA_RESULTS = True  # False
-LOAD_CLUSTER_RESULTS = True  # False
+LOAD_PREPROCESSED_DATA = True
+LOAD_EMBEDDINGS = True
+LOAD_REDUCED_EMBEDDINGS = True
+LOAD_OPTUNA_RESULTS = True
+LOAD_CLUSTER_RESULTS = True
+LOAD_CLUSTER_TITLES = True
 NUM_GPUS = get_gpu_count()
 NUM_OPTUNA_WORKERS = 1
 NUM_OPTUNA_THREADS = 1
@@ -88,7 +87,7 @@ CLUSTER_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 PLOT_DIM_RED_ALGO = "tsne"  # "pca", "tsne"
 CLUSTER_RED_DIM = 2  # None for no dimensionality reduction when clustering
 PLOT_RED_DIM = 2  # either 2 or 3
-N_ITER_MAX_TSNE = 25_000
+N_ITER_MAX_TSNE = 10_000
 REPRESENTATION_METRIC = None  # None, "correlation", "euclidean"
 
 
@@ -97,24 +96,28 @@ N_OPTUNA_TRIALS = 100
 N_CLUSTER_MAX = 500
 DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster
 OPTUNA_PARAM_RANGES = {
-    "max_cluster_size_primary": [0.02, 0.1],
-    "min_cluster_size_primary": [0.0007, 0.01],
-    "min_samples_primary": [0.0, 0.0007],
-    "max_cluster_size_secondary": [0.3, 1.0],
-    "min_cluster_size_secondary": [0.001, 0.4],
-    "min_samples_secondary": [0.0, 0.001],
-    "alpha": [0.5, 5.0],
-    "cluster_selection_method": ["eom"],
+    "max_cluster_size_primary": [0.01, 0.10],
+    "min_cluster_size_primary": [0.00, 0.01],
+    "min_samples_primary": [0.0, 0.01],
+    "cluster_selection_method_primary": ["eom", "leaf"],
+    "alpha_primary": [0.1, 10.0],
+    "max_cluster_size_secondary": [0.10, 1.00],
+    "min_cluster_size_secondary": [0.00, 0.10],
+    "min_samples_secondary": [0.00, 0.01],
+    "cluster_selection_method_secondary": ["eom", "leaf"],
+    "alpha_secondary": [0.1, 10.0],
 }
 DEFAULT_CLUSTERING_PARAMS = {
-    'max_cluster_size_primary': 0.059104588066699,
-    'min_cluster_size_primary': 0.004393240987952118,
-    'min_samples_primary': 0.00022394924184848854,
-    'max_cluster_size_secondary': 0.9714541246953673,
-    'min_cluster_size_secondary': 0.1735510702949971,
-    'min_samples_secondary': 0.00031720162384443566,
-    'alpha': 0.6993816357610149,
-    'cluster_selection_method': 'eom'
+    'max_cluster_size_primary': 0.2919863528303383,
+    'min_cluster_size_primary': 0.009679393776123493,
+    'min_samples_primary': 0.0007918323865929469,
+    'cluster_selection_method_primary': 'eom',
+    'alpha_primary': 5.7771040877781585,
+    'max_cluster_size_secondary': 0.29554921106911725,
+    'min_cluster_size_secondary': 0.01686389845074823,
+    'min_samples_secondary': 0.008972554973227416,
+    'cluster_selection_method_secondary': 'leaf',
+    'alpha_secondary': 0.14712757099653453,
 }
 
 
@@ -124,33 +127,18 @@ DEFAULT_CLUSTER_SUMMARIZATION_PARAMS = {
     "n_representants": 20,
     "gpt_system_prompt": " ".join([  # only used if method == gpt
         "You are an expert in the fields of clinical trials and eligibility criteria.",
-        "You express yourself succintly, i.e., less than 100 characters per response.",
+        "You express yourself succintly, i.e., less than 5 words per response.",
     ]),
     "gpt_user_prompt_intro": " ".join([  # only used if method == gpt
         "I will show you a list of eligility criteria. They share some level of similarity.",
         "Your task is to create a single, short tag that effecively summarizes the list.",
-        "Importantly, the tag should be very short and concise, i.e., a few words, and under 100 characters",
+        "Importantly, the tag should be very short and concise, i.e., under 5 words.",
         "You can use medical abbreviations and you should avoid focusing on details or outliers.",
         "Write only your answer, starting with 'Inclusion - ' or 'Exclusion - '.",
-        "Summarize the criteria list as a whole, choosing either 'Inclusion' or 'Exclusion' for your tag.",
+        "Summarize the criteria list as a whole, choosing either 'Inclusion' or 'Exclusion' for your tag, and not both.",
         "Here is the list of criteria (each one is on a new line):\n",
     ])
 }
-
-
-# # Cluster plot parameters (was used for an old plot)
-# FIG_SIZE = (11, 11)
-# TEXT_SIZE = 16
-# COLORS = np.array((
-#     list(plt.cm.tab20(np.arange(20)[0::2])) + \
-#     list(plt.cm.tab20(np.arange(20)[1::2]))) * (N_CLUSTER_MAX // 20 + 1)
-# )
-# NA_COLOR_ALPHA = 0.1
-# NOT_NA_COLOR_ALPHA = 0.8
-# NA_COLOR = np.array([0.0, 0.0, 0.0, NA_COLOR_ALPHA])
-# COLORS[:, -1] = NOT_NA_COLOR_ALPHA
-# SCATTER_PARAMS = {"s": 0.33, "linewidth": 0}
-# LEAF_SEPARATION = 0.3
 
 
 def clean_memory_fn():

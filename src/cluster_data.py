@@ -21,34 +21,37 @@ try:
     from . import config as cfg
     from .cluster_utils import ClusterOutput, report_clusters
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    logger = logging.getLogger("cluster")
 except ImportError:  # cluster_data.py file run as a script
+    import sys
     import config as cfg
     from cluster_utils import ClusterOutput, report_clusters
+    logger = logging.getLogger("cluster")
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter("[%(levelname).1s %(asctime)s] %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
 
 
 def main():
     """ If ran as a script, call cluster_data for several models and write
         a summary of results to a directory given by cfg.RESULT_DIR
     """
-    # Format logging messages
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(levelname).1s %(asctime)s] %(message)s",
-    )
     # Generate results using one model, then save the results
     cluster_metrics = {}
     for model_id in cfg.MODEL_STR_MAP.keys():
-        logging.info(" - Starting with %s" % model_id)
+        logger.info(" - Starting with %s" % model_id)
         cluster_output = cluster_data_fn(
             model_id=model_id,
             cluster_summarization_params=cfg.DEFAULT_CLUSTER_SUMMARIZATION_PARAMS,
         )
         cluster_metrics[model_id] = cluster_output.cluster_metrics
-        logging.info(" - Done with %s" % model_id)
+        logger.info(" - Done with %s" % model_id)
     
     # Plot final results (comparison of different model embeddings)
     plot_model_comparison(cluster_metrics)
-    logging.info("Model comparison finished!")
+    logger.info("Model comparison finished!")
 
 
 def cluster_data_fn(
@@ -64,7 +67,7 @@ def cluster_data_fn(
         model_id = cfg.DEFAULT_MODEL_ID
         
     # Save / load data
-    logging.info(" - Retrieving elibility criteria embeddings with %s" % model_id)
+    logger.info(" - Retrieving elibility criteria embeddings with %s" % model_id)
     if cfg.LOAD_EMBEDDINGS:
         embeddings, raw_txts, metadatas = load_embeddings(
             output_dir=cfg.POSTPROCESSED_DIR, model_id=model_id,
@@ -82,7 +85,7 @@ def cluster_data_fn(
         )
     
     # Generate clusters and report them as a formatted data structure
-    logging.info(" - Running clustering algorithm on eligibility criteria embeddings")
+    logger.info(" - Running clustering algorithm on eligibility criteria embeddings")
     os.makedirs(cfg.RESULT_DIR, exist_ok=True)
     return report_clusters(
         model_id=model_id,
@@ -141,7 +144,7 @@ def generate_embeddings(
         a given model
     """
     # Load model and data pipeline
-    logging.info(" --- Running model to generate embeddings")
+    logger.info(" --- Running model to generate embeddings")
     model, tokenizer, pooling_fn = get_model_pipeline(model_id)
     ds = get_dataset(input_dir, tokenizer)
     rs = InProcessReadingService()
@@ -191,7 +194,7 @@ def save_embeddings(output_dir, model_id, embeddings, raw_txts, metadatas):
 def load_embeddings(output_dir, model_id):
     """ Simple loading function for model predictions
     """
-    logging.info(" --- Loading embeddings from previous run")
+    logger.info(" --- Loading embeddings from previous run")
     ckpt_path = os.path.join(output_dir, "embeddings_%s.pt" % model_id)
     embeddings = torch.load(ckpt_path)
     with open(os.path.join(output_dir, "raw_txts.pkl"), "rb") as f:
