@@ -185,12 +185,13 @@ class ClusterOutput:
         """
         # Generate a visualization for top_20 clusters and all clusters
         self.visualization_paths = {"top_20": {}, "all": {}}
+        is_3d = len(self.cluster_instances[0].ec_list[0].reduced_embedding) == 3
         for top_20 in [True, False]:
             
             # Retrieve cluster data (clusters are already sorted by n_sample)
             clusters = [c for c in self.cluster_instances]  # if c.cluster_id != -1]
             symbol_seq = ["circle", "square", "diamond", "x"]
-            size_seq = [1.0, 0.7, 0.7, 0.5]
+            size_seq = [1.0, 0.7, 0.7, 0.5] if is_3d else [1.0, 1.0, 1.0, 1.0]
             symbol_map = {k: symbol_seq[k % len(symbol_seq)] for k in range(100)}
             size_map = {k: size_seq[k % len(size_seq)] for k in range(100)}
             plotly_colors = px.colors.qualitative.Plotly
@@ -215,7 +216,7 @@ class ClusterOutput:
                 # Eligibility criteria data
                 xs.extend([ec.reduced_embedding[0] for ec in cluster.ec_list])
                 ys.extend([ec.reduced_embedding[1] for ec in cluster.ec_list])
-                if len(cluster.ec_list[0].reduced_embedding) > 2:
+                if is_3d:
                     zs.extend([ec.reduced_embedding[2] for ec in cluster.ec_list])
                 raw_texts.extend([self.format_text(
                     ec.raw_text, max_length=35, max_line_count=10
@@ -235,7 +236,7 @@ class ClusterOutput:
                 "id": ids,  "hover_name": hover_names, "symbol": symbols,
                 "size": sizes,
             })
-            if len(zs) > 0:
+            if is_3d:
                 plot_df["z"] = zs
             
             # Plot cluster data using px.scatter
@@ -243,7 +244,7 @@ class ClusterOutput:
                 "label": False, "hover_name": False, "raw_text": True,
                 "symbol": False, "size": False, "x": ":.2f", "y": ":.2f",
             }
-            if len(zs) == 0:
+            if not is_3d:  # i.e., is_2d
                 fig = px.scatter(
                     plot_df, x="x", y="y", opacity=1.0,
                     color="label", color_discrete_map=color_map,
@@ -286,6 +287,8 @@ class ClusterOutput:
                     font=dict(size=legend_font_size, family="TeX Gyre Pagella"),
                 )
             )
+            
+            # Small improvements that depend on what is plotted
             if top_20:
                 for trace in fig.data:
                     trace.name = trace.name.replace(', 0', '').replace(', 1', '')
@@ -294,6 +297,10 @@ class ClusterOutput:
                     margin=dict(l=20, r=20, t=20, b=20),
                     showlegend=False,
                 )
+            if not is_3d:  # i.e., is_2d
+                for trace in fig.data:
+                    if 'size' in trace.marker:
+                        trace.marker.size = [s / 3 for s in trace.marker.size]
             
             # Save image and sets plot_path
             plot_tag = "top_20" if top_20 else "all"
