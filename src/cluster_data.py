@@ -40,13 +40,13 @@ def main():
     # Generate results using one model, then save the results
     cluster_metrics = {}
     for model_id in cfg.MODEL_STR_MAP.keys():
-        logger.info(" - Starting with %s" % model_id)
+        logger.info("- Starting with %s" % model_id)
         cluster_output = cluster_data_fn(
             model_id=model_id,
             cluster_summarization_params=cfg.DEFAULT_CLUSTER_SUMMARIZATION_PARAMS,
         )
         cluster_metrics[model_id] = cluster_output.cluster_metrics
-        logger.info(" - Done with %s" % model_id)
+        logger.info("- Done with %s" % model_id)
     
     # Plot final results (comparison of different model embeddings)
     plot_model_comparison(cluster_metrics)
@@ -66,7 +66,7 @@ def cluster_data_fn(
         model_id = cfg.DEFAULT_MODEL_ID
         
     # Save / load data
-    logger.info(" - Retrieving elibility criteria embeddings with %s" % model_id)
+    logger.info("- Retrieving elibility criteria embeddings with %s" % model_id)
     if cfg.LOAD_EMBEDDINGS:
         embeddings, raw_txts, metadatas = load_embeddings(
             output_dir=cfg.POSTPROCESSED_DIR, model_id=model_id,
@@ -84,7 +84,7 @@ def cluster_data_fn(
         )
     
     # Generate clusters and report them as a formatted data structure
-    logger.info(" - Running clustering algorithm on eligibility criteria embeddings")
+    logger.info("- Running clustering algorithm on eligibility criteria embeddings")
     os.makedirs(cfg.RESULT_DIR, exist_ok=True)
     return report_clusters(
         model_id=model_id,
@@ -143,7 +143,7 @@ def generate_embeddings(
         a given model
     """
     # Load model and data pipeline
-    logger.info(" --- Running model to generate embeddings")
+    logger.info("--- Running model to generate embeddings")
     model, tokenizer, pooling_fn = get_model_pipeline(model_id)
     ds = get_dataset(input_dir, tokenizer)
     rs = InProcessReadingService()
@@ -193,7 +193,7 @@ def save_embeddings(output_dir, model_id, embeddings, raw_txts, metadatas):
 def load_embeddings(output_dir, model_id):
     """ Simple loading function for model predictions
     """
-    logger.info(" --- Loading embeddings from previous run")
+    logger.info("--- Loading embeddings from previous run")
     ckpt_path = os.path.join(output_dir, "embeddings_%s.pt" % model_id)
     embeddings = torch.load(ckpt_path)
     with open(os.path.join(output_dir, "raw_txts.pkl"), "rb") as f:
@@ -431,7 +431,7 @@ def split_csv_for_multiprocessing(input_dir, num_workers):
     os.makedirs(output_dir, exist_ok=True)
     
     # Split the big file into smaller pieces
-    logging.info(" --- Loading csv file for multiprocessing split")
+    logging.info("--- Loading csv file for multiprocessing split")
     csv_path = csv_files[0]
     csv_name = os.path.split(csv_path)[-1]
     df = pd.read_csv(csv_path)

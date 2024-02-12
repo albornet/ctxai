@@ -1,4 +1,5 @@
 import logging
+logger = logging.getLogger("cluster")
 from flask import Flask, jsonify, request
 from src import config as cfg, parse_data_fn, cluster_data_fn
 
@@ -25,11 +26,11 @@ def predict():
         request_data["model_id"] = cfg.DEFAULT_MODEL_ID
     
     # Parse raw data into pre-processed data files
-    logging.info("Parsing criterion texts into individual criteria")
+    logger.info("Parsing criterion texts into individual criteria")
     parse_data_fn(raw_data_path=request_data["raw_data_path"])
     
     # Cluster pre-processed data
-    logging.info("Clustering procedure started")
+    logger.info("Clustering procedure started")
     cluster_output = cluster_data_fn(
         model_id=request_data["model_id"],
         user_id=request_data["user_id"],
@@ -38,6 +39,7 @@ def predict():
     )
     
     # Return jsonified file paths corresponding to the written data and plot
+    logger.info("Clustering procedure finished")
     return jsonify({
         "cluster_json_path": cluster_output.json_path,
         "cluster_visualization_paths": cluster_output.visualization_paths,

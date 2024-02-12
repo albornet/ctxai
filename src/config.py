@@ -75,7 +75,7 @@ CHOSEN_STATUSES = []  # ["completed", "terminated"]  # ["completed", "suspended"
 CHOSEN_CRITERIA = []  # ["in"]  # [] to ignore this selection filter
 CHOSEN_PHASES = []  # ["Phase 2"]  # [] to ignore this selection filter
 # Infections ["C01"] // Neoplasms ["C04"] // Cardiovascular Diseases ["C14"] // Immune System Diseases ["C20"]
-CHOSEN_COND_IDS = ["C04"] if RAW_INPUT_FORMAT == "json" else []  # TODO: CARDIOLOGY? ETC. LOOK FOR OTHER C0N
+CHOSEN_COND_IDS = ["C04"] if RAW_INPUT_FORMAT == "json" else []
 CHOSEN_ITRV_IDS = []  # ["D02"]  # [] to ignore this selection filter
 CHOSEN_COND_LVL = None  # 4  # None to ignore this one
 CHOSEN_ITRV_LVL = None  # 3  # None to ignore this one

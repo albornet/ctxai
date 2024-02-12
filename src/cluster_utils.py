@@ -58,10 +58,10 @@ from sklearn.metrics import (
     homogeneity_completeness_v_measure,
 )
 
-# Logs and warnings (does any of this works?)
+# Logs and warnings
 from cuml.common import logger as cuml_logger
-cuml_logger.set_level(cuml_logger.level_error)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 
 
 @dataclass
@@ -318,7 +318,7 @@ class ClusterOutput:
     @staticmethod
     def format_text(
         title: str,
-        max_length: int=100,
+        max_length: int=70,
         max_line_count: int=2
     ) -> tuple[str, int]:
         """ Try to format the title in the legend of the ctxai cluster plot
@@ -412,39 +412,39 @@ def report_clusters(
         and log a scatter plot of the low-dimensional data to tensorboard
     """
     # Reduce data dimensionality
-    logger.info(" --- Reducing %s criteria embeddings dimensionality" % len(raw_data))
+    logger.info("--- Reducing %s criteria embeddings dimensionality" % len(raw_data))
     plot_data, cluster_data = get_plot_and_cluster_data(
         raw_data, model_id, cluster_summarization_params
     )
     
     # Build token information
-    logger.info(" --- Collecting criteria texts, labels, and embeddings")
+    logger.info("--- Collecting criteria texts, labels, and embeddings")
     token_info = get_token_info(
         raw_txts, raw_data, plot_data, model_id, label_type, metadatas,
     )
     
     # Look for best set of hyper-parameters for clustering
-    logger.info(" --- Retrieving best clustering hyper-parameters")
+    logger.info("--- Retrieving best clustering hyper-parameters")
     params = find_best_cluster_params(cluster_data, model_id)
     
     # Proceed to clustering with the best set of hyper-parameters
-    logger.info(" --- Clustering criteria with best set of hyper-parameters")
+    logger.info("--- Clustering criteria with best set of hyper-parameters")
     cluster_info = cluster_criteria(params, cluster_data, model_id)
     
     # Perform label-free and label-dependent evaluation of clustering
-    logger.info(" --- Evaluating cluster quality")
+    logger.info("--- Evaluating cluster quality")
     evaluate_clustering(cluster_info, metadatas)
     
     # Compute useful statistics and metrics
-    logger.info(" --- Computing cluster statistics")
+    logger.info("--- Computing cluster statistics")
     compute_cluster_statistics(token_info, cluster_info)
     
     # Identify one "typical" criterion string for each cluster of criteria
-    logger.info(" --- Generating cluster titles")
+    logger.info("--- Generating cluster titles")
     compute_cluster_titles(token_info, cluster_info, cluster_summarization_params)
     
     # Generate formatted output as a dedicated dataclass
-    logger.info(" --- Formatting cluster output and plotting data")
+    logger.info("--- Formatting cluster output and plotting data")
     cluster_output = ClusterOutput(
         token_info=token_info, cluster_info=cluster_info,
         user_id=user_id, project_id=project_id,
@@ -496,7 +496,7 @@ def get_plot_and_cluster_data(
     
     # Load already computed data with reduced dimensionality
     if cfg.LOAD_REDUCED_EMBEDDINGS:
-        logger.info(" ----- Loading reduced data from previous run")
+        logger.info("----- Loading reduced data from previous run")
         with open(load_path_cluster, "rb") as f_cluster:
             cluster_data = pickle.load(f_cluster)
         with open(load_path_plot, "rb") as f_plot:
@@ -506,7 +506,7 @@ def get_plot_and_cluster_data(
     else:
         
         # Compute reduced representation for clustering
-        logger.info(" ----- Running %s algorithm" % cfg.CLUSTER_DIM_RED_ALGO)
+        logger.info("----- Running %s algorithm" % cfg.CLUSTER_DIM_RED_ALGO)
         cluster_data = compute_reduced_repr(
             data.numpy(),  # data is torch tensor
             reduced_dim=cluster_red_dim,
@@ -620,23 +620,23 @@ def find_best_cluster_params(data: np.ndarray, model_id: str) -> dict:
     # Try to load best hyper-parameters and return defaults otherwise
     params_path = os.path.join(cfg.RESULT_DIR, "params_%s.json" % model_id)
     if cfg.LOAD_OPTUNA_RESULTS:
-        logger.info(" ----- Loading best hyper-parameters from previous optuna study")
+        logger.info("----- Loading best hyper-parameters from previous optuna study")
         try:
             with open(params_path, "r") as file:
                 return json.load(file)
         except FileNotFoundError:
-            logger.warning(" ----- Parameters not found, using default parameters")
+            logger.warning("----- Parameters not found, using default parameters")
             return cfg.DEFAULT_CLUSTERING_PARAMS
         
     # Find and save best hyper-parameters
     else:
-        logger.info(" ----- Running optuna study to find best hyper-parameters")
+        logger.info("----- Running optuna study to find best hyper-parameters")
         with LocalCUDACluster(
             n_workers=cfg.NUM_OPTUNA_WORKERS,
             threads_per_worker=cfg.NUM_OPTUNA_THREADS,
             processes=True,
         ) as cluster:
-            logger.info(" ----- %s created for study" % cluster)
+            logger.info("----- %s created for study" % cluster)
             with Client(cluster, timeout="120s") as client:
                 db_path = "sqlite:///%s/optuna_%s.db" % (cfg.RESULT_DIR, model_id)
                 study = optuna.create_study(
@@ -652,7 +652,7 @@ def find_best_cluster_params(data: np.ndarray, model_id: str) -> dict:
                 )
                 best_params = study.best_params
         
-        logger.info(" ----- Best hyper-parameters: %s" % best_params)
+        logger.info("----- Best hyper-parameters: %s" % best_params)
         with open(params_path, "w") as file:
             json.dump(best_params, file, indent=4)
         return best_params
@@ -675,11 +675,11 @@ def objective_fn(trial: optuna.Trial, data: np.ndarray) -> float:
     if 1 < cluster_info["n_clusters"] < cfg.N_CLUSTER_MAX:
         cluster_lbls = cluster_info["cluster_ids"]
         metric = 0.0
-        metric += silhouette_score(data, cluster_lbls, chunksize=20_000)
+        metric += 1.0 * silhouette_score(data, cluster_lbls, chunksize=20_000)
         # metric += 1.0 - davies_bouldin_score(data, cluster_lbls)
         # metric += 0.001 * calinski_harabasz_score(data, cluster_lbls)
-        no_lbl_prop = np.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
-        metric += 1.0 * (1.0 - no_lbl_prop)
+        no_lbl_rate = np.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
+        metric += 1.0 * (1.0 - no_lbl_rate)
         return metric
     else:
         return float("-inf")
@@ -895,7 +895,7 @@ def evaluate_clustering(cluster_info: dict, metadatas: dict):
         true_lbl_combinations = list(product(phases, conds, itrvs))
         for true_lbl_combination in true_lbl_combinations:
             dupl_cluster_lbls.append(cluster_lbl)
-            dupl_true_lbls.append(" - ".join(true_lbl_combination))
+            dupl_true_lbls.append("- ".join(true_lbl_combination))
     
     # Create a set of int labels for label-dependent metrics
     encoder = LabelEncoder()
