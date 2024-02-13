@@ -6,6 +6,7 @@ try:
     from . import config as cfg
 except ImportError:
     import config as cfg
+import random
 import time
 import csv
 import json
@@ -22,6 +23,7 @@ from sklearn.preprocessing import LabelEncoder
 from itertools import product
 from typing import Union
 from tqdm import tqdm
+from collections import defaultdict
 from dataclasses import dataclass, asdict
 
 # OpenAI
@@ -39,7 +41,7 @@ from openai import (
 # Optuna, cuml, and dask
 import optuna
 import dask.array as da
-from optuna.samplers import TPESampler
+from optuna.samplers import TPESampler, RandomSampler
 from dask_cuda import LocalCUDACluster
 from dask.distributed import Client
 from cuml.cluster import hdbscan
@@ -141,7 +143,7 @@ class ClusterOutput:
         self.cluster_instances = self.get_cluster_instances(
             token_info=token_info, cluster_info=cluster_info,
         )
-        self.plot_clusters()
+        self.plot_clusters()  # sets self.visualization_paths
         self.write_raw_ec_list()  # sets self.raw_ec_list_path
         self.write_to_json()  # sets self.json_path
     
@@ -178,14 +180,17 @@ class ClusterOutput:
         # Return customly sorted cluster instances
         return sorted(cluster_instances, key=custom_sort_key, reverse=True)
     
-    def plot_clusters(self, font_size: float=21.0) -> None:
-        """ Plot clusters as a coloured scatter plot. If top_20 is True, only
-            the 20 largest clusters are plotted, skipping the "-1" cluster.
+    def plot_clusters(self, font_size: float=21.0, top_k: int=20) -> None:
+        """ Plot clusters as a coloured scatter plot, both for all cluster,
+            (without labels) and for the top_k largest clusters (with labels)
         """
-        # Generate a visualization for top_20 clusters and all clusters
-        self.visualization_paths = {"top_20": {}, "all": {}}
+        # Initialize variables
+        assert top_k <= 20, "top_k must not be greater than 20"
+        self.visualization_paths = defaultdict(lambda: {})
         is_3d = len(self.cluster_instances[0].ec_list[0].reduced_embedding) == 3
-        for top_20 in [True, False]:
+        
+        # Generate a visualization for top_k clusters and all clusters
+        for do_top_k in [True, False]:
             
             # Retrieve cluster data (clusters are already sorted by n_sample)
             clusters = [c for c in self.cluster_instances]  # if c.cluster_id != -1]
@@ -194,7 +199,7 @@ class ClusterOutput:
             symbol_map = {k: symbol_seq[k % len(symbol_seq)] for k in range(100)}
             size_map = {k: size_seq[k % len(size_seq)] for k in range(100)}
             plotly_colors = px.colors.qualitative.Plotly
-            if top_20: clusters = clusters[:20]
+            if do_top_k: clusters = clusters[:top_k]
             
             # Format data for dataframe
             ys, xs, zs, raw_texts = [], [], [], []
@@ -235,8 +240,7 @@ class ClusterOutput:
                 "id": ids,  "hover_name": hover_names, "symbol": symbols,
                 "size": sizes,
             })
-            if is_3d:
-                plot_df["z"] = zs
+            if is_3d: plot_df["z"] = zs
             
             # Plot cluster data using px.scatter
             hover_data = {
@@ -262,8 +266,9 @@ class ClusterOutput:
                 )
             
             # Polish figure
-            width, height = (1540, 720) if top_20 else (720, 720)
+            width, height = (1540, 720) if do_top_k else (720, 720)
             legend_font_size = max(1, font_size * 20 / legend_line_count)
+            legend_font_size = min(font_size, legend_font_size)  # not bigger
             fig.update_traces(
                 marker=dict(line=dict(color="black", width=1)),
             )
@@ -288,7 +293,7 @@ class ClusterOutput:
             )
             
             # Small improvements that depend on what is plotted
-            if top_20:
+            if do_top_k:
                 for trace in fig.data:
                     trace.name = trace.name.replace(', 0', '').replace(', 1', '')
             else:
@@ -302,19 +307,18 @@ class ClusterOutput:
                         trace.marker.size = [s / 3 for s in trace.marker.size]
             
             # Save image and sets plot_path
-            plot_tag = "top_20" if top_20 else "all"
+            plot_tag = "top_%i" % top_k if do_top_k else "all"
             plot_name = "%s_cluster_plot_%s.png" % (self.unique_id, plot_tag)
             plot_path = os.path.join(cfg.RESULT_DIR, plot_name)
             html_path = plot_path.replace("png", "html")
             fig.write_image(plot_path, engine="kaleido", scale=2)
             fig.write_html(html_path)
-            if top_20:
-                self.visualization_paths["top_20"]["png"] = plot_path
-                self.visualization_paths["top_20"]["html"] = html_path
-            else:
-                self.visualization_paths["all"]["png"] = plot_path
-                self.visualization_paths["all"]["html"] = html_path
-
+            self.visualization_paths[plot_tag]["png"] = plot_path
+            self.visualization_paths[plot_tag]["html"] = html_path
+        
+        # Finalize dictionary now that it is set
+        self.visualization_paths = dict(self.visualization_paths)
+        
     @staticmethod
     def format_text(
         title: str,
@@ -570,6 +574,7 @@ def compute_reduced_repr(
             "metric": "cosine",
             "learning_rate": 200.0,
             "verbose": cuml_logger.level_error,
+            "random_state": cfg.RANDOM_STATE
         }
         if data.shape[0] < 36_000 and reduced_dim == 2:
             n_neighbors = min(int(data.shape[0] / 400 + 1), 90)
@@ -639,8 +644,9 @@ def find_best_cluster_params(data: np.ndarray, model_id: str) -> dict:
             logger.info("----- %s created for study" % cluster)
             with Client(cluster, timeout="120s") as client:
                 db_path = "sqlite:///%s/optuna_%s.db" % (cfg.RESULT_DIR, model_id)
+                sampler = TPESampler if cfg.OPTUNA_SAMPLER == "tpe" else RandomSampler
                 study = optuna.create_study(
-                    sampler=TPESampler(),
+                    sampler=sampler(seed=cfg.RANDOM_STATE),
                     direction="maximize",
                     storage=db_path,
                 )
@@ -736,6 +742,9 @@ def set_cluster_params(n_samples: int, mode: str, params: dict) -> dict:
 def clusterize(data: np.ndarray, mode: str, params: dict) -> dict:
     """ Cluster data points with hdbscan algorithm and return cluster information
     """
+    # Ensure reproducibility
+    set_seeds(cfg.RANDOM_STATE)
+    
     # Identify cluster parameters given the data and cluster mode
     cluster_params = set_cluster_params(len(data), mode, params)
     
@@ -1036,6 +1045,8 @@ def prompt_gpt(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                seed=cfg.RANDOM_STATE,
+                temperature=0,
             )
             return response.choices[0].message.content.strip()
         
@@ -1045,6 +1056,18 @@ def prompt_gpt(
             time.sleep(2 ** i)
             
     return "No response, open-ai reached rate limit or another network issue occurred."
+
+
+def set_seeds(seed_value=1234):
+    """ Set seed for reproducibility
+    """
+    random.seed(seed_value)
+    np.random.seed(seed_value)
+    torch.manual_seed(seed_value)
+
+    # If using PyTorch and you want determinism
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 # def plot_clusters_original_way(

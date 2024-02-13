@@ -16,8 +16,10 @@ from src.parse_utils import (
 from tqdm import tqdm
 try:
     from . import config as cfg
+    from .cluster_utils import set_seeds
 except:
     import src.config as cfg
+    from cluster_utils import set_seeds
     
     
 def main():
@@ -36,6 +38,9 @@ def main():
 def parse_data_fn(raw_data_path: str) -> None:
     """ Parse all CT files into lists of inclusion and exclusion criteria
     """
+    # Ensure reproducibility
+    set_seeds(cfg.RANDOM_STATE)
+    
     # Load parsed data from previous run
     if cfg.LOAD_PREPROCESSED_DATA:
         logging.info(" - Eligibility criteria already parsed, skipping this step")

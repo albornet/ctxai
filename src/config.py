@@ -7,6 +7,8 @@ import cupy as cp
 
 def get_gpu_count():
     """ Count the number available GPU devices based on the output of nvidia-smi
+        This function avoids using torch, because torch will initialize some CUDA
+        variables, which disrupts the behaviour of CUDA clusters later
     """
     try:
         output = subprocess.check_output(['nvidia-smi', '-L'], text=True)
@@ -26,6 +28,7 @@ LOAD_CLUSTER_TITLES = False
 NUM_GPUS = get_gpu_count()
 NUM_OPTUNA_WORKERS = 1
 NUM_OPTUNA_THREADS = 1
+RANDOM_STATE = 1234
 
 
 # Directories and data format
@@ -90,6 +93,7 @@ REPRESENTATION_METRIC = None  # None, "correlation", "euclidean"
 
 
 # Clustering algorithm and hyper-optimization (optuna) parameters
+OPTUNA_SAMPLER = "random"  # "tpe" (better), "random" (seed more stable)
 N_OPTUNA_TRIALS = 100
 N_CLUSTER_MAX = 500
 DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster

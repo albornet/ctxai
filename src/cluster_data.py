@@ -4,11 +4,11 @@ import logging
 logger = logging.getLogger("cluster")
 try:
     from . import config as cfg
-    from .cluster_utils import ClusterOutput, report_clusters
+    from .cluster_utils import ClusterOutput, report_clusters, set_seeds
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 except ImportError:  # cluster_data.py file run as a script
     import config as cfg
-    from cluster_utils import ClusterOutput, report_clusters
+    from cluster_utils import ClusterOutput, report_clusters, set_seeds
     logger.setLevel(logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
     formatter = logging.Formatter("[%(levelname).1s %(asctime)s] %(message)s")
@@ -61,6 +61,9 @@ def cluster_data_fn(
 ) -> ClusterOutput:
     """ Cluster eligibility criteria using embeddings from one language model
     """
+    # Ensure reproducibility
+    set_seeds(cfg.RANDOM_STATE)
+    
     # Take default model if not provided
     if model_id is None:
         model_id = cfg.DEFAULT_MODEL_ID
@@ -357,7 +360,7 @@ class Tokenizer(dpi.IterDataPipe):
             max_length=512,
             return_tensors="pt"
         )
-        
+
         
 def plot_model_comparison(metrics):
     """ Generate a comparison plot between models, based on how model embeddings
