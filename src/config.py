@@ -19,15 +19,13 @@ def get_gpu_count():
 
 
 # General parameters
-LOAD_PREPROCESSED_DATA = False
-LOAD_EMBEDDINGS = False
+LOAD_PREPROCESSED_DATA = True
+LOAD_EMBEDDINGS = True
 LOAD_REDUCED_EMBEDDINGS = False
 LOAD_OPTUNA_RESULTS = False
 LOAD_CLUSTER_RESULTS = False
 LOAD_CLUSTER_TITLES = False
 NUM_GPUS = get_gpu_count()
-NUM_OPTUNA_WORKERS = 1
-NUM_OPTUNA_THREADS = 1
 RANDOM_STATE = 1234
 
 
@@ -96,7 +94,7 @@ REPRESENTATION_METRIC = None  # None, "correlation", "euclidean"
 OPTUNA_SAMPLER = "random"  # "tpe" (better), "random" (seed more stable)
 N_OPTUNA_TRIALS = 100
 N_CLUSTER_MAX = 500
-DO_SUBCLUSTERIZE = True  # if True, try to cluster further each computed cluster
+DO_SUBCLUSTERIZE = False  # if True, try to cluster further each computed cluster
 OPTUNA_PARAM_RANGES = {
     "max_cluster_size_primary": [0.01, 0.10],
     "min_cluster_size_primary": [0.00, 0.01],
@@ -127,7 +125,7 @@ DEFAULT_CLUSTERING_PARAMS = {
 DEFAULT_CLUSTER_SUMMARIZATION_PARAMS = {
     "plot_red_dim": 2,  # data dimensionality for data visualization; either 2 or 3
     "cluster_red_dim": 2,  # data dimensionality for clustering algorithm; None for no reduction
-    "method": "gpt",  # "closest", "shortest", "gpt"
+    "method": "closest",  # "closest", "shortest", "gpt"
     "n_representants": 20,  # cluster titles generated from n_representants samples closest to cluster medoid
     "gpt_system_prompt": " ".join([  # only used if method == gpt
         "You are an expert in the fields of clinical trials and eligibility criteria.",
@@ -143,6 +141,20 @@ DEFAULT_CLUSTER_SUMMARIZATION_PARAMS = {
         "Here is the list of criteria (each one is on a new line):\n",
     ])
 }
+
+
+# BERTopic parameters
+BERTOPIC_DIM_RED_ALGO = "umap"  # "pca", "umap", "tsne"
+BERTOPIC_RED_DIM = 2
+BERTOPIC_REPRESENTATION_MODEL = "none"  # "none", "gpt"
+BERTOPIC_REPRESENTATION_GPT_PROMPT = """
+I have a topic that contains the following documents: 
+[DOCUMENTS]
+The topic is described by the following keywords: 
+[KEYWORDS]
+Based on the information above, extract a short but highly descriptive topic label of at most 5 words.
+Make sure it is in the following format: topic: <topic label>
+"""
 
 
 def clean_memory_fn():

@@ -623,7 +623,7 @@ def find_best_cluster_params(data: np.ndarray, model_id: str) -> dict:
     """ Use optuna to determine best set of cluster parameters (or load them)
     """
     # Try to load best hyper-parameters and return defaults otherwise
-    params_path = os.path.join(cfg.RESULT_DIR, "params_%s.json" % model_id)
+    params_path = os.path.join(cfg.POSTPROCESSED_DIR, "params_%s.json" % model_id)
     if cfg.LOAD_OPTUNA_RESULTS:
         logger.info("----- Loading best hyper-parameters from previous optuna study")
         try:
@@ -636,14 +636,10 @@ def find_best_cluster_params(data: np.ndarray, model_id: str) -> dict:
     # Find and save best hyper-parameters
     else:
         logger.info("----- Running optuna study to find best hyper-parameters")
-        with LocalCUDACluster(
-            n_workers=cfg.NUM_OPTUNA_WORKERS,
-            threads_per_worker=cfg.NUM_OPTUNA_THREADS,
-            processes=True,
-        ) as cluster:
+        with LocalCUDACluster(n_workers=1, processes=True) as cluster:
             logger.info("----- %s created for study" % cluster)
             with Client(cluster, timeout="120s") as client:
-                db_path = "sqlite:///%s/optuna_%s.db" % (cfg.RESULT_DIR, model_id)
+                db_path = "sqlite:///%s/optuna_%s.db" % (cfg.POSTPROCESSED_DIR, model_id)
                 sampler = TPESampler if cfg.OPTUNA_SAMPLER == "tpe" else RandomSampler
                 study = optuna.create_study(
                     sampler=sampler(seed=cfg.RANDOM_STATE),
