@@ -1,35 +1,41 @@
+# Config
 import os
-import csv
+import sys
+try:
+    import config
+except:
+    from . import config
 import logging
+cfg = config.get_config()
+logger = logging.getLogger("cluster")
+
+# Utils
+import csv
 import torchdata.datapipes.iter as dpi
+from tqdm import tqdm
 from torchdata.dataloader2 import (
     DataLoader2,
     InProcessReadingService,
     MultiProcessingReadingService,
 )
-from src.parse_utils import (
+from src.preprocess_utils import (
     ClinicalTrialFilter,
     CriteriaParser,
     CriteriaCSVWriter,
     CustomXLSXLineReader,
+    set_seeds,
 )
-from tqdm import tqdm
-try:
-    from . import config as cfg
-    from .cluster_utils import set_seeds
-except:
-    import src.config as cfg
-    from cluster_utils import set_seeds
-    
-    
+
+
 def main():
     """ Main script (if not run from a web-service)
     """
-    # Format logging messages
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(levelname).1s %(asctime)s] %(message)s",
-    )
+    # Logging
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter("[%(levelname).1s %(asctime)s] %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
     
     # Parse criteria (main function not implemented yet)
     raise NotImplementedError
@@ -38,30 +44,34 @@ def main():
 def parse_data_fn(raw_data_path: str) -> None:
     """ Parse all CT files into lists of inclusion and exclusion criteria
     """
-    # Ensure reproducibility
-    set_seeds(cfg.RANDOM_STATE)
+    # Ensure reproducibility (needed here?)
+    set_seeds(cfg["RANDOM_STATE"])
     
     # Load parsed data from previous run
-    if cfg.LOAD_PREPROCESSED_DATA:
+    if cfg["LOAD_PREPROCESSED_DATA"]:
         logging.info(" - Eligibility criteria already parsed, skipping this step")
     
     # Parse data using torchdata logic
     else:
         logging.info(" - Building criteria from raw clinical trial texts")
-            
+        
         # Initialize output file with data headers
-        os.makedirs(cfg.PREPROCESSED_DIR, exist_ok=True)
-        csv_path = os.path.join(cfg.PREPROCESSED_DIR, "parsed_criteria.csv")
+        preprocessed_dir = os.path.join(
+            cfg["BASE_DATA_DIR"], cfg["POSTPROCESSED_SUBDIR"], cfg["RAW_INPUT_FORMAT"])
+        os.makedirs(preprocessed_dir, exist_ok=True)
+        csv_path = os.path.join(preprocessed_dir, "parsed_criteria.csv")
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(cfg.PREPROCESSED_DATA_HEADERS)
+            writer.writerow(cfg["PREPROCESSED_DATA_HEADERS"])
             
         # Initialize data processors
-        ds = get_dataset(raw_data_path, cfg.RAW_INPUT_FORMAT)
-        if cfg.NUM_PARSE_WORKERS == 0:
+        too_many_workers = max(os.cpu_count() - 4, os.cpu_count() // 4)
+        num_parse_workers = min(cfg["NUM_PARSE_WORKERS"], too_many_workers)
+        ds = get_dataset(raw_data_path, cfg["RAW_INPUT_FORMAT"])
+        if num_parse_workers == 0:
             rs = InProcessReadingService()
         else:
-            rs = MultiProcessingReadingService(num_workers=cfg.NUM_PARSE_WORKERS)
+            rs = MultiProcessingReadingService(num_workers=num_parse_workers)
         dl = DataLoader2(ds, reading_service=rs)
         
         # Write parsed criteria to the output file

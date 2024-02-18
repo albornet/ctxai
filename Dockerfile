@@ -12,6 +12,7 @@ RUN pip install \
     optuna==3.5.0 \
     transformers==4.37.0 \
     nltk==3.8.1 \
+    bertopic==0.16.0 \
     hdbscan==0.8.33 \
     plotly==5.18.0 \
     kaleido==0.2.1 \

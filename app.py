@@ -1,9 +1,10 @@
 import logging
-logger = logging.getLogger("cluster")
+from src import config, parse_data_fn, cluster_data_fn
 from flask import Flask, jsonify, request
-from src import config as cfg, parse_data_fn, cluster_data_fn
 
 app = Flask(__name__)
+config.load_default_config()
+logger = logging.getLogger("cluster")
 
 PATH_PREFIX = "/ct-risk/cluster"
 RULE_PATH = "%s/predict" % PATH_PREFIX
@@ -15,27 +16,26 @@ def predict():
     """
     # Validate required fields in JSON payload and send bad request otherwise
     request_data = request.get_json(force=True)
-    requested_keys = ["user_id", "project_id", "raw_data_path"]
-    if not all([k in request_data for k in requested_keys]):
+    required_keys = [
+        "RAW_DATA_PATH", "USER_ID", "PROJECT_ID", "EMBEDDING_MODEL_ID",
+    ]
+    if not all([k in request_data for k in required_keys]):
         error_dict = {"error": "Missing field in request data"}
         return jsonify(error_dict), 400
-    if "cluster_summarization_params" not in request_data:
-        request_data["cluster_summarization_params"] = \
-            cfg.DEFAULT_CLUSTER_SUMMARIZATION_PARAMS
-    if "model_id" not in request_data:
-        request_data["model_id"] = cfg.DEFAULT_MODEL_ID
+    
+    # Update in-memory configuration using request data
+    config.update_config(request_data)
     
     # Parse raw data into pre-processed data files
     logger.info("Parsing criterion texts into individual criteria")
-    parse_data_fn(raw_data_path=request_data["raw_data_path"])
+    parse_data_fn(raw_data_path=request_data["RAW_DATA_PATH"])
     
     # Cluster pre-processed data
     logger.info("Clustering procedure started")
     cluster_output = cluster_data_fn(
-        model_id=request_data["model_id"],
-        user_id=request_data["user_id"],
-        project_id=request_data["project_id"],
-        cluster_summarization_params=request_data["cluster_summarization_params"]
+        embed_model_id=request_data["EMBEDDING_MODEL_ID"],
+        user_id=request_data["USER_ID"],
+        project_id=request_data["PROJECT_ID"],
     )
     
     # Return jsonified file paths corresponding to the written data and plot
