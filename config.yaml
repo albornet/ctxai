@@ -74,15 +74,15 @@ OPTUNA_PARAM_RANGES:
   alpha_secondary: [0.1, 10.0]
 
 # Cluster generation parameters
-CLUSTER_DIM_RED_ALGO: tsne  # pca, umap, tsne
-CLUSTER_RED_DIM: 2
+CLUSTER_DIM_RED_ALGO: umap  # pca, umap, tsne, null (umap advised here)
+CLUSTER_RED_DIM: 10  # becomes full-dim if CLUSTER_DIM_RED_ALGO == null
 CLUSTER_RDM_METRIC: null  # null, correlation, euclidean  # NOT USED FOR NOW
 N_ITER_MAX_TSNE: 10000
 DO_SUBCLUSTERIZE: false  # if true, try to cluster further each computed cluster
 
 # Cluster representation parameters
-PLOT_DIM_RED_ALGO: tsne  # pca, umap, tsne
-PLOT_RED_DIM: 2
+PLOT_DIM_RED_ALGO: tsne  # pca, umap, tsne (tsne advised here)
+PLOT_RED_DIM: 2  # 2 or 3 (dim = 3 cannot use CuML, i.e., is slow)
 PLOT_RDM_METRIC: null  # null, correlation, euclidean  # NOT USED FOR NOW
 CLUSTER_REPRESENTATION_MODEL: null  # null, gpt
 CLUSTER_REPRESENTATION_GPT_PROMPT: |
@@ -92,3 +92,4 @@ CLUSTER_REPRESENTATION_GPT_PROMPT: |
   [KEYWORDS]
   Based on the information above, extract a short but highly descriptive topic label of at most 5 words.
   Make sure it is in the following format: topic: <topic label>
+  

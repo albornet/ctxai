@@ -7,6 +7,7 @@ except:
 cfg = config.get_config()
 
 # Utils
+import re
 import csv
 import json
 import numpy as np
@@ -47,6 +48,7 @@ from cuml.decomposition import PCA as CUML_PCA
 from sklearn.manifold import TSNE
 from cuml.manifold import TSNE as CUML_TSNE
 from cuml.common import logger as cuml_logger
+from bertopic.dimensionality import BaseDimensionalityReduction
 
 
 class ClusterGeneration:
@@ -383,7 +385,8 @@ class ClusterOutput:
             directly from the cluster data if it has the right dimension
         """
         if cfg["CLUSTER_RED_DIM"] == cfg["PLOT_RED_DIM"] \
-        and cfg["CLUSTER_DIM_RED_ALGO"] == cfg["PLOT_DIM_RED_ALGO"]:
+        and cfg["CLUSTER_DIM_RED_ALGO"] == cfg["PLOT_DIM_RED_ALGO"] \
+        or cfg["CLUSTER_DIM_RED_ALGO"] is None:
             return self.cluster_info["cluster_data"]
         else:
             dim_red_model = get_dim_red_model(
@@ -392,7 +395,7 @@ class ClusterOutput:
                 self.n_samples,
             )
             return dim_red_model.fit_transform(self.cluster_info["cluster_data"])
-            
+    
     def compute_cluster_statistics(self) -> dict:
         """ Compute CT prevalence between clusters & label prevalence within clusters
         """
@@ -430,7 +433,7 @@ class ClusterOutput:
             "medoids": cluster_medoids,
             "sorted_member_ids": cluster_sorted_member_ids,
         }
-        
+    
     def compute_cluster_medoids(self, cluster_info: dict) -> dict:
         """ Compute cluster centroids by averaging samples within each cluster,
             weighting by the sample probability of being in that cluster
@@ -551,7 +554,7 @@ class ClusterOutput:
                 labels.extend([label] * len(cluster.ec_list))
                 ids.extend([cluster.cluster_id] * len(cluster.ec_list))
                 hover_names.extend([self.format_text(
-                    cluster.title, max_length=40, max_line_count=10
+                    cluster.title, max_length=40, max_line_count=10,
                 )[0]] * len(cluster.ec_list))
                 
                 # Eligibility criteria data
@@ -560,7 +563,7 @@ class ClusterOutput:
                 if is_3d:
                     zs.extend([ec.reduced_embedding[2] for ec in cluster.ec_list])
                 raw_texts.extend([self.format_text(
-                    ec.raw_text, max_length=35, max_line_count=10
+                    ec.raw_text, max_length=35, max_line_count=10,
                 )[0] for ec in cluster.ec_list])
                 
                 # Eligibility criteria markers
@@ -590,7 +593,7 @@ class ClusterOutput:
                     color="label", color_discrete_map=color_map,
                     labels={"label": "Cluster labels"}, size="size",
                     symbol="symbol", symbol_map=symbol_map,
-                    hover_name="label", hover_data=hover_data,
+                    hover_name="hover_name", hover_data=hover_data,
                 )
             else:
                 hover_data.update({"z": ":.2f"})
@@ -654,48 +657,49 @@ class ClusterOutput:
             visualization_paths[plot_tag]["html"] = html_path
         
         return dict(visualization_paths)
-        
+    
     @staticmethod
     def format_text(
-        title: str,
+        text: str,
         max_length: int=70,
         max_line_count: int=2
     ) -> tuple[str, int]:
-        """ Try to format the title in the legend of the ctxai cluster plot
+        """ Format text by cutting it into lines and trimming it if too long
         """
         # Shorten criterion type information
-        title = title.replace("\n", " ").replace("<br>", " ") \
-            .replace("Inclusion -", "IN -").replace("Inclusion criterion", "IN") \
-            .replace("inclusion -", "IN -").replace("inclusion criterion", "IN") \
-            .replace("Exclusion -", "EX -").replace("Exclusion criterion", "EX") \
-            .replace("exclusion -", "EX -").replace("exclusion criterion", "EX")
+        text = text.replace("\n", " ").replace("<br>", " ") \
+            .replace("Inclusion -", "IN:").replace("Inclusion criterion -", "IN:") \
+            .replace("inclusion -", "IN:").replace("inclusion criterion -", "IN:") \
+            .replace("Exclusion -", "EX:").replace("Exclusion criterion -", "EX:") \
+            .replace("exclusion -", "EX:").replace("exclusion criterion -", "EX:")
         
-        # Let the title as it is if its length is ok
-        if len(title) <= max_length:
-            return title.strip(), 1
+        # Let the text as it is if its length is ok
+        if len(text) <= max_length:
+            return text, 1
         
-        # Split the title into words and process
-        words = title.split()
+        # Split the title into words and build the formatted text
+        words = re.findall(r'\w+-|\w+', text)
         shortened_text = ""
         current_line_length = 0
         line_count = 1
         for word in words:
             
             # Check if adding the next word would exceed the maximum length
+            added_space = (" " if word[-1] != "-" else "")
             if current_line_length + len(word) > max_length:
                 if line_count == max_line_count:  # replace remaining text by "..."
                     shortened_text = shortened_text.rstrip() + "..."
                     break
                 else:  # Move to the next line
-                    shortened_text += "<br>" + word + " "
-                    current_line_length = len(word) + 1
+                    shortened_text += "<br>" + word + added_space
+                    current_line_length = len(word) + len(added_space)
                     line_count += 1
             else:
-                shortened_text += word + " "
-                current_line_length += len(word) + 1
+                shortened_text += word + added_space
+                current_line_length += len(word) + len(added_space)
         
         return shortened_text.strip(), line_count
-            
+    
     def write_raw_ec_list(self) -> str:
         """ Generate a raw list of criteria grouped by cluster
         """
@@ -751,7 +755,12 @@ class TSNEForBERTopic(TSNE):
 def get_dim_red_model(algorithm: str, dim: int, n_samples: int):
     """ Create a dimensionality reduction model for BERTopic
     """
-    if algorithm == "umap":
+    # No dimensionality reduction
+    if algorithm is None:
+        return BaseDimensionalityReduction()
+    
+    # Uniform manifold approximation and projection
+    elif algorithm == "umap":
         return CUML_UMAP(
             n_components=dim,
             random_state=cfg["RANDOM_STATE"],
@@ -759,31 +768,40 @@ def get_dim_red_model(algorithm: str, dim: int, n_samples: int):
             min_dist=0.0,
             metric="cosine",
         )
+    
+    # Principal component analysis
     elif algorithm == "pca":
         return CUML_PCA(
             n_components=dim,
             random_state=cfg["RANDOM_STATE"],
         )
+    
+    # t-distributed stochastic neighbor embedding
     elif algorithm == "tsne":
         params = {
             "n_components": dim,
             "random_state": cfg["RANDOM_STATE"],
-            "method": "barnes_hut" if dim < 4 else "exact",
+            "method": "barnes_hut" if dim < 4 else "exact",  # "fft" or "barnes_hut"?
             "n_iter": cfg["N_ITER_MAX_TSNE"],
             "n_iter_without_progress": 1000,
             "metric": "cosine",
             "learning_rate": 200.0,
-            "verbose": cuml_logger.level_error,
         }
         if n_samples < 36_000 and dim == 2:
             n_neighbors = min(int(n_samples / 400 + 1), 90)
-            cuml_specific_params = {
+            small_cuml_specific_params = {
                 "n_neighbors": n_neighbors,  # CannyLabs CUDA-TSNE default is 32
                 "perplexity": 50.0,  # CannyLabs CUDA-TSNE default is 50
                 "learning_rate_method": "none",  # not in sklearn and produces bad results
             }
-            params.update(cuml_specific_params)
+            params.update(small_cuml_specific_params)
         if dim == 2:
+            params.update({"verbose": cuml_logger.level_error})
             return CUML_TSNEForBERTopic(**params)
         else:
+            params.update({"verbose": False})
             return TSNEForBERTopic(**params)  # cuml_tsne only available for dim = 2
+    
+    # Invalid name
+    else:
+        raise ValueError("Invalid name for dimensionality reduction algorithm")

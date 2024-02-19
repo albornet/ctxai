@@ -14,7 +14,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import pickle
 import numpy as np
 import matplotlib.pyplot as plt
-from typing import Union
 from tqdm import tqdm
 try:
     from cluster_utils import ClusterGeneration, ClusterOutput, get_dim_red_model
@@ -133,6 +132,7 @@ def get_representation_model():
                 exponential_backoff=True, chat=True,
                 prompt=cfg["CLUSTER_REPRESENTATION_GPT_PROMPT"],
             )
+    # TODO N-KEYWORDS
     else:
         return None
 
