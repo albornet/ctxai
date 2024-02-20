@@ -16,6 +16,7 @@ import plotly.express as px
 from itertools import product
 from collections import defaultdict
 from dataclasses import dataclass, asdict
+from bertopic import BERTopic
 
 # Optimization
 import optuna
@@ -182,7 +183,7 @@ class ClusterGeneration:
         clusterer = HDBSCAN(**cluster_params)
         clusterer.fit(data)
         cluster_ids = clusterer.labels_
-        n_clusters = np.max(cluster_ids).item() + 1  # -1 being ignored
+        n_clusters = np.max(cluster_ids).item() + 1  # -1 not counted in n_clusters
         member_ids = {
             k: np.where(cluster_ids == k)[0].tolist() for k in range(-1, n_clusters)
         }
@@ -194,8 +195,8 @@ class ClusterGeneration:
         # Return cluster info
         return {
             "clusterer": clusterer,
-            "n_clusters": n_clusters,
             "cluster_data": data,
+            "n_clusters": n_clusters,
             "cluster_ids": cluster_ids,
             "member_ids": member_ids,
         }
@@ -296,8 +297,7 @@ class ClusterOutput:
     def __init__(
         self,
         output_base_dir: str,
-        cluster_info: dict,
-        cluster_representations: dict[int, tuple[str, int]],
+        topic_model: BERTopic,
         raw_txts: list[str],
         metadatas: list[str],
         embed_model_id: str | None=None,
@@ -328,9 +328,8 @@ class ClusterOutput:
         self.itrvs = [l["intervention"] for l in metadatas]
         
         # Cluster data and evaluation
-        self.cluster_info = cluster_info
-        self.cluster_titles = {
-            k: self.get_title(v) for k, v in cluster_representations.items()}
+        self.cluster_info = self.get_cluster_info(topic_model)
+        self.cluster_titles = self.get_cluster_titles(topic_model)
         self.plot_data = self.get_plot_data()
         self.cluster_metrics = self.evaluate_clustering()        
         self.statistics = self.compute_cluster_statistics()
@@ -341,14 +340,44 @@ class ClusterOutput:
         self.raw_ec_list_path = self.write_raw_ec_list()
         self.write_to_json()  # this sets self.json_path
     
-    def get_title(self, representation):
-        """ Find cluster title from its bertopic representation
+    def get_cluster_info(self, topic_model: BERTopic) -> dict:
+        """ Re-align cluster ids from ClusterGeneration object to BERTopic topics
+            BERTopic sorts topics, and hence disaligns with original cluster ids
         """
-        if isinstance(representation, str):
-            return representation
-        elif isinstance(representation, (tuple, list)):
-            titles = [self.get_title(r) for r in representation]
-            return "-".join([t for t in titles if t])
+        original_cluster_info = topic_model.hdbscan_model.cluster_info
+        cluster_ids = np.array(topic_model.topics_)
+        n_clusters = cluster_ids.max() + 1
+        member_ids = {
+            k: np.where(cluster_ids == k)[0].tolist()
+            for k in range(-1, n_clusters)
+        }
+        return {
+            "clusterer": original_cluster_info["clusterer"],
+            "cluster_data": original_cluster_info["cluster_data"],
+            "n_clusters": n_clusters,
+            "cluster_ids": cluster_ids,
+            "member_ids": member_ids,
+        }
+    
+    def get_cluster_titles(self, topic_model: BERTopic) -> dict:
+        """ Format titles from raw BERTopic representation model output
+        """
+        # Helper function that adapts to diverse representation formats
+        def get_title(representation) -> str:
+            """ Find cluster title from its bertopic representation
+            """
+            if isinstance(representation, str):
+                return representation
+            elif isinstance(representation, (tuple, list)):
+                titles = [get_title(r) for r in representation]
+                return "-".join([t for t in titles if t])
+        
+        # Return formatted BERTopic representatinos
+        formatted_titles = {
+            k: get_title(v)
+            for k, v in topic_model.topic_representations_.items()
+        }
+        return formatted_titles
     
     def get_cluster_instances(self) -> list[ClusterInstance]:
         """ Separate data by cluster and build a formatted cluster instance for each
@@ -377,7 +406,7 @@ class ClusterOutput:
             elif sort_by == "prevalence":
                 return cluster_instance.prevalence
         
-        # Return customly sorted cluster instances
+        # Return cluster instances (sorting helps printing data structure)
         return sorted(cluster_instances, key=custom_sort_key, reverse=True)
     
     def get_plot_data(self) -> np.ndarray:
@@ -549,7 +578,9 @@ class ClusterOutput:
             for k, cluster in enumerate(clusters):
                 
                 # Cluster data
-                label, label_line_count = self.format_text(cluster.title)
+                label, label_line_count = self.format_text(
+                    cluster.title, max_length=100, max_line_count=2,
+                )
                 legend_line_count += label_line_count
                 labels.extend([label] * len(cluster.ec_list))
                 ids.extend([cluster.cluster_id] * len(cluster.ec_list))

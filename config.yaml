@@ -11,7 +11,7 @@ LOAD_CLUSTER_TITLES: false
 
 # Directories and data format
 BASE_DATA_DIR: data
-RAW_INPUT_FORMAT: ctxai  # json, ctxai -> only used in script mode (not api)
+RAW_INPUT_FORMAT: ctxai  # json, ctxai
 PREPROCESSED_SUBDIR: preprocessed  # BASE_DATA_DIR/PREPROCESSED_SUBDIR
 POSTPROCESSED_SUBDIR: postprocessed  # BASE_DATA_DIR/POSTPROCESSED_SUBDIR
 RESULT_DIR: results
@@ -84,7 +84,8 @@ DO_SUBCLUSTERIZE: false  # if true, try to cluster further each computed cluster
 PLOT_DIM_RED_ALGO: tsne  # pca, umap, tsne (tsne advised here)
 PLOT_RED_DIM: 2  # 2 or 3 (dim = 3 cannot use CuML, i.e., is slow)
 PLOT_RDM_METRIC: null  # null, correlation, euclidean  # NOT USED FOR NOW
-CLUSTER_REPRESENTATION_MODEL: null  # null, gpt
+CLUSTER_REPRESENTATION_MODEL: null  # null, gpt -> null will just use bertopic's topic keywords
+CLUSTER_REPRESENTATION_TOP_N_WORDS_PER_TOPIC: 5  # BERTopic default = 10
 CLUSTER_REPRESENTATION_GPT_PROMPT: |
   I have a topic that contains the following documents: 
   [DOCUMENTS]

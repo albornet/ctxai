@@ -12,62 +12,64 @@ logger = logging.getLogger("cluster")
 import re
 import ast
 import json
+import pickle
 import random
 import numpy as np
 import pandas as pd
 import torch
 import gc
 import cupy as cp
+from tqdm import tqdm
 
 # Data pipelines
 import nltk
-from nltk.tokenize import sent_tokenize
+from nltk.tokenize import sent_tokenize  # from clinitokenizer.tokenize import clini_tokenize
 from difflib import SequenceMatcher
-# from clinitokenizer.tokenize import clini_tokenize
 from torchdata.datapipes import functional_datapipe
-from torchdata.datapipes.iter import IterDataPipe
+from torchdata.datapipes.iter import IterDataPipe, FileLister
+from torchdata.dataloader2 import DataLoader2, InProcessReadingService
+from transformers import AutoModel, AutoTokenizer
 
-
-EXCLUSION_KEYS = [s + '\:?\.?' for s in [
-    'exclusion criteria', 'exclusion criterion', 'exclusions?', 'excluded',
-    'ineligible', 'not eligible', 'not allowed', 'must not have', 'must not be',
-    'patients? have no ', 'patients? have not ', 'patients? had no ',
-    'patients? had not ', 'patients? must not ', 'no patients?',
+EXCLUSION_KEYS = [s + "\:?\.?" for s in [
+    "exclusion criteria", "exclusion criterion", "exclusions?", "excluded",
+    "ineligible", "not eligible", "not allowed", "must not have", "must not be",
+    "patients? have no ", "patients? have not ", "patients? had no ",
+    "patients? had not ", "patients? must not ", "no patients?",
 ]]
-INCLUSION_KEYS = [s + '\:?\.?' for s in [
-    'inclusion criteria', 'inclusion criterion', 'inclusions?', 'included',
-    'eligible', 'allowed', 'must have', 'must be', 'patients? have ',
-    'patients? had ', 'had to have', 'required', 'populations? consisted',
-    'not excluded', 'not be excluded',
+INCLUSION_KEYS = [s + "\:?\.?" for s in [
+    "inclusion criteria", "inclusion criterion", "inclusions?", "included",
+    "eligible", "allowed", "must have", "must be", "patients? have ",
+    "patients? had ", "had to have", "required", "populations? consisted",
+    "not excluded", "not be excluded",
 ]]
 CONTEXT_KEYS = [
-    'prior medications?', 'prior treatments?', 'concurrent medications?',
-    'weight restrictions?', 'social habits?', 'medications?',  # 'diseases?'
-    'concurrent treatments?', 'co-existing conditions?', 'risk behaviors?',
-    'prior concurrent therapy', 'prior concurrent therapies', 'recommended',
-    'medical complications?', 'obstetrical complications?', 'group a', 'group b',
-    'part a', 'part b', 'phase a', 'phase b', 'phase i', 'phase ii', 'phase iii',
-    'phase iv', 'discouraged', 'avoid', 'patients?', 'patient characteristics',
-    'disease characteristics', 'elevated psa criteria', 'psa criteria',
-    'initial doses?', 'additional doses?',
+    "prior medications?", "prior treatments?", "concurrent medications?",
+    "weight restrictions?", "social habits?", "medications?",  # "diseases?"
+    "concurrent treatments?", "co-existing conditions?", "risk behaviors?",
+    "prior concurrent therapy", "prior concurrent therapies", "recommended",
+    "medical complications?", "obstetrical complications?", "group a", "group b",
+    "part a", "part b", "phase a", "phase b", "phase i", "phase ii", "phase iii",
+    "phase iv", "discouraged", "avoid", "patients?", "patient characteristics",
+    "disease characteristics", "elevated psa criteria", "psa criteria",
+    "initial doses?", "additional doses?",
 ]
 SUBCONTEXT_KEYS = [
-    'infants?', 'allowed for infants?', 'women', 'allowed for women',
-    'allowed for pregnant women', 'life expectancy', 'hematopoietic',
-    'hematologic', 'hepatic', 'renal', 'cardiovascular', 'cardiac', 'pulmonary',
-    'systemic', 'biologic therapy', 'chemotherapy', 'endocrine therapy',
-    'radiotherapy', 'surgery', 'other', 'performance status', 'age', 'sex',
-    'definitive local therapy', 'previous hormonal therapy or other treatments?',
-    'other treatments?', 'previous hormonal therapy', 'in either eyes?',
-    'in study eyes?', 'one of the following', 'body mass index', 'bmi',
-    'eligible subtypes?', 'hormone receptor status', 'menopausal status',
-    'at least 1 of the following factors', 'serology', 'chemistry',
+    "infants?", "allowed for infants?", "women", "allowed for women",
+    "allowed for pregnant women", "life expectancy", "hematopoietic",
+    "hematologic", "hepatic", "renal", "cardiovascular", "cardiac", "pulmonary",
+    "systemic", "biologic therapy", "chemotherapy", "endocrine therapy",
+    "radiotherapy", "surgery", "other", "performance status", "age", "sex",
+    "definitive local therapy", "previous hormonal therapy or other treatments?",
+    "other treatments?", "previous hormonal therapy", "in either eyes?",
+    "in study eyes?", "one of the following", "body mass index", "bmi",
+    "eligible subtypes?", "hormone receptor status", "menopausal status",
+    "at least 1 of the following factors", "serology", "chemistry",
 ]
 SIMILARITY_FN = lambda s, k: SequenceMatcher(None, s, k).ratio()
 MAX_SIMILARITY_FN = lambda s, keys: max([SIMILARITY_FN(s.lower(), k) for k in keys])
 
 
-@functional_datapipe('filter_clinical_trials')
+@functional_datapipe("filter_clinical_trials")
 class ClinicalTrialFilter(IterDataPipe):
     """ Read clinical trial json files, parse them and filter the ones that can
         be used for eligibility criteria representation learning
@@ -76,30 +78,30 @@ class ClinicalTrialFilter(IterDataPipe):
         super().__init__()
         self.dp = dp
         mesh_cw_path = os.path.join(cfg["BASE_DATA_DIR"], cfg["MESH_CROSSWALK_NAME"])
-        with open(mesh_cw_path, 'r') as f:
+        with open(mesh_cw_path, "r") as f:
             self.mesh_cw = json.load(f)
             
     def __iter__(self):
         for ct_path, ct_dict in self.dp:
             # Load protocol and make sure it corresponds to the file name
-            protocol = ct_dict['FullStudy']['Study']['ProtocolSection']
-            derived = ct_dict['FullStudy']['Study']['DerivedSection']
-            nct_id = protocol['IdentificationModule']['NCTId']
-            assert nct_id == os.path.split(ct_path)[-1].strip('.json')
+            protocol = ct_dict["FullStudy"]["Study"]["ProtocolSection"]
+            derived = ct_dict["FullStudy"]["Study"]["DerivedSection"]
+            nct_id = protocol["IdentificationModule"]["NCTId"]
+            assert nct_id == os.path.split(ct_path)[-1].strip(".json")
             
             # Check protocol belongs to the data and load criteria
             good_to_go, label, phases, conditions, cond_ids, itrv_ids =\
                 self.check_protocol(protocol, derived)
             if good_to_go:
                 metadata = {
-                    'ct_path': ct_path,
-                    'label': label,
-                    'phases': phases,
-                    'conditions': conditions,
-                    'condition_ids': cond_ids,
-                    'intervention_ids': itrv_ids,
+                    "ct_path": ct_path,
+                    "label": label,
+                    "phases": phases,
+                    "conditions": conditions,
+                    "condition_ids": cond_ids,
+                    "intervention_ids": itrv_ids,
                 }
-                criteria_str = protocol['EligibilityModule']['EligibilityCriteria']
+                criteria_str = protocol["EligibilityModule"]["EligibilityCriteria"]
                 yield metadata, criteria_str
                 
     def check_protocol(self, protocol, derived):
@@ -107,48 +109,48 @@ class ClinicalTrialFilter(IterDataPipe):
             sample for eligibility criteria representation learning 
         """
         # Check the status of the CT is either completed or terminated
-        status = protocol['StatusModule']['OverallStatus']
-        if status not in ['Completed', 'Terminated']:
+        status = protocol["StatusModule"]["OverallStatus"]
+        if status not in ["Completed", "Terminated"]:
             return False, None, None, None, None, None
         
         # Check that the study is interventional
-        study_type = protocol['DesignModule']['StudyType']
-        if study_type != 'Interventional':
+        study_type = protocol["DesignModule"]["StudyType"]
+        if study_type != "Interventional":
             return False, None, None, None, None, None
         
         # Check the study is about a drug test
         interventions = protocol[
-            'ArmsInterventionsModule']['InterventionList']['Intervention']
-        intervention_types = [i['InterventionType'] for i in interventions]
-        if 'Drug' not in intervention_types:
+            "ArmsInterventionsModule"]["InterventionList"]["Intervention"]
+        intervention_types = [i["InterventionType"] for i in interventions]
+        if "Drug" not in intervention_types:
             return False, None, None, None, None, None
         
         # Check the study has defined phases, then record phases
-        if 'PhaseList' not in protocol['DesignModule']:
+        if "PhaseList" not in protocol["DesignModule"]:
             return False, None, None, None, None, None
-        phases = protocol['DesignModule']['PhaseList']['Phase']
+        phases = protocol["DesignModule"]["PhaseList"]["Phase"]
         
         # Check that the protocol has an eligibility criterion section
-        if 'EligibilityCriteria' not in protocol['EligibilityModule']:
+        if "EligibilityCriteria" not in protocol["EligibilityModule"]:
             return False, None, None, None, None, None
         
         # Check that the protocol has a condition list
-        if 'ConditionList' not in protocol['ConditionsModule']:
+        if "ConditionList" not in protocol["ConditionsModule"]:
             return False, None, None, None, None, None
-        conditions = protocol['ConditionsModule']['ConditionList']['Condition']
+        conditions = protocol["ConditionsModule"]["ConditionList"]["Condition"]
         
         # Try to load condition mesh ids
         try:
-            conds = derived['ConditionBrowseModule']['ConditionMeshList']
-            cond_ids = [c['ConditionMeshId'] for c in conds['ConditionMesh']]
+            conds = derived["ConditionBrowseModule"]["ConditionMeshList"]
+            cond_ids = [c["ConditionMeshId"] for c in conds["ConditionMesh"]]
         except KeyError:
             cond_ids = []
         cond_treenums = self.convert_unique_ids_to_tree_nums(cond_ids)
                 
         # Try to load intervention mesh ids
         try:
-            itrvs = derived['InterventionBrowseModule']['InterventionMeshList']
-            itrv_ids = [i['InterventionMeshId'] for i in itrvs['InterventionMesh']]
+            itrvs = derived["InterventionBrowseModule"]["InterventionMeshList"]
+            itrv_ids = [i["InterventionMeshId"] for i in itrvs["InterventionMesh"]]
         except KeyError:
             itrv_ids = []
         itrv_tree_nums = self.convert_unique_ids_to_tree_nums(itrv_ids)
@@ -163,7 +165,7 @@ class ClinicalTrialFilter(IterDataPipe):
         tree_nums = []
         for i in unique_ids:
             try:
-                tree_nums.append(self.mesh_cw[i.replace('000', '', 1)])
+                tree_nums.append(self.mesh_cw[i.replace("000", "", 1)])
             except KeyError:
                 try:
                     tree_nums.append(self.mesh_cw[i])
@@ -172,7 +174,7 @@ class ClinicalTrialFilter(IterDataPipe):
         return tree_nums
     
     
-@functional_datapipe('parse_criteria')
+@functional_datapipe("parse_criteria")
 class CriteriaParser(IterDataPipe):
     """ Parse criteria raw paragraphs into a set of individual criteria, as well
         as other features and labels, such as medical context
@@ -186,8 +188,8 @@ class CriteriaParser(IterDataPipe):
     def __iter__(self):
         for metadata, criteria_str in self.dp:
             parsed_criteria, complexity = self.parse_criteria(criteria_str)
-            metadata['complexity'] = complexity
-            metadata['criteria_str'] = criteria_str
+            metadata["complexity"] = complexity
+            metadata["criteria_str"] = criteria_str
             yield metadata, parsed_criteria
             
     def parse_criteria(self,
@@ -199,21 +201,21 @@ class CriteriaParser(IterDataPipe):
             categorized as inclusion, exclusion, or undetermined criterion
         """
         # Split criteria paragraph into a set of sentences
-        paragraphs = [s.strip() for s in criteria_str.split('\n') if s.strip()]
+        paragraphs = [s.strip() for s in criteria_str.split("\n") if s.strip()]
         sentences = []
         for paragraph in paragraphs:
             sentences.extend(self.split_by_period(paragraph))
             
         # Initialize running variables and go through every sentence
         parsed = []
-        prev_category = '?'
+        prev_category = "?"
         similarity_threshold = 0.0
         for sentence in sentences:
             
             # Match sentence to exclusion and inclusion key expressions
             found_in = any(re.search(k, sentence, re.IGNORECASE) for k in INCLUSION_KEYS)
             found_ex = any(re.search(k, sentence, re.IGNORECASE) for k in EXCLUSION_KEYS)
-            if re.search('not (be )?excluded', sentence, re.IGNORECASE):
+            if re.search("not (be )?excluded", sentence, re.IGNORECASE):
                 found_ex = False  # special case (could do better?)
             
             # Compute max similarity with any key, and if a prev update is needed
@@ -229,15 +231,15 @@ class CriteriaParser(IterDataPipe):
             if sentence_is_section_title:
                 similarity_threshold = is_section_title_thresh
             else:
-                parsed.append({'category': category, 'text': sentence})
+                parsed.append({"category": category, "text": sentence})
                 
         # Try to further split parsed criteria, using empirical methods
         parsed = self.contextualize_criteria(parsed)
         parsed = self.post_process_criteria(parsed)
         
         # Return final list of criteria, as well as how easy it was to split
-        parsed = [c for c in parsed if len(c['text']) >= is_bug_thresh]
-        complexity = 'easy' if similarity_threshold > 0 else 'hard'
+        parsed = [c for c in parsed if len(c["text"]) >= is_bug_thresh]
+        complexity = "easy" if similarity_threshold > 0 else "hard"
         return parsed, complexity
     
     @staticmethod
@@ -245,13 +247,13 @@ class CriteriaParser(IterDataPipe):
         """ Sentence tokenizer does bad with "e.g." and "i.e.", hence a special
             function that helps it a bit (any other edge-case to add?)
         """
-        text = text.replace('e.g.', 'e_g_')\
-                   .replace('i.e.', 'i_e_')\
-                   .replace('etc.', 'etc_')
+        text = text.replace("e.g.", "e_g_")\
+                   .replace("i.e.", "i_e_")\
+                   .replace("etc.", "etc_")
         splits = [s.strip() for s in sent_tokenize(text) if s.strip()]
-        return [s.replace('e_g_', 'e.g.')
-                 .replace('i_e_', 'i.e.')
-                 .replace('etc_', 'etc.') for s in splits]
+        return [s.replace("e_g_", "e.g.")
+                 .replace("i_e_", "i.e.")
+                 .replace("etc_", "etc.") for s in splits]
     
     @staticmethod
     def categorise_sentence(found_ex: bool,
@@ -269,11 +271,11 @@ class CriteriaParser(IterDataPipe):
         """
         # If a key expression was matched, try to update prev category
         if found_ex:  # has to be done before found_in!
-            category = 'ex'
-            if should_update_prev: prev_category = 'ex'
+            category = "ex"
+            if should_update_prev: prev_category = "ex"
         elif found_in:
-            category = 'in'
-            if should_update_prev: prev_category = 'in'
+            category = "in"
+            if should_update_prev: prev_category = "in"
         
         # If no key expression was matched, use prev category
         else:
@@ -294,69 +296,70 @@ class CriteriaParser(IterDataPipe):
         """
         # Initialize variables and go through all parsed criteria
         contextualized = []
-        context, subcontext, prev_category = '', '', ''
+        context, subcontext, prev_category = "", "", ""
         for criterion in parsed_criteria:
             
             # Split criterion by any context or subcontext keys, keeping matches
-            sentence, category = criterion['text'], criterion['category']
-            pattern = "|".join(['(%s(?=\:))' % k for k in CONTEXT_KEYS + SUBCONTEXT_KEYS])
+            sentence, category = criterion["text"], criterion["category"]
+            pattern = "|".join(["(%s(?=\:))" % k for k in CONTEXT_KEYS + SUBCONTEXT_KEYS])
             splits = re.split(pattern, sentence, flags=re.IGNORECASE)
             for split in [s for s in splits if s is not None]:
                 
                 # If any split corresponds to a context key, define it as context
                 if MAX_SIMILARITY_FN(split, CONTEXT_KEYS) > is_context_thresh\
-                    and not 'see ' in split.lower():
-                    context = split.strip(':')
-                    subcontext = ''  # reset subcontext if new context
+                    and not "see " in split.lower():
+                    context = split.strip(":")
+                    subcontext = ""  # reset subcontext if new context
                     continue
                 
                 # Same, but for subcontext keys
                 if MAX_SIMILARITY_FN(split, SUBCONTEXT_KEYS) > is_subcontext_thresh\
-                    and not 'see ' in split.lower():
-                    subcontext = split.strip(':')
+                    and not "see " in split.lower():
+                    subcontext = split.strip(":")
                     continue
                 
                 # Append non-matching criterion, with previous (sub)context match
                 contextualized.append({
-                    'category': criterion['category'],
-                    'context': context,
-                    'subcontext': subcontext,
-                    'text': split.strip('\n\t :'),
+                    "category": criterion["category"],
+                    "context": context,
+                    "subcontext": subcontext,
+                    "text": split.strip("\n\t :"),
                 })
             
             # # Small check in case previous category was different (ok?)
             # if category != prev_category:
-            #     context, subcontext = '', ''
+            #     context, subcontext = "", ""
             #     prev_category = category
             
         # Return newly parsed set of criteria, with added context
         return contextualized
         
     @staticmethod
-    def post_process_criteria(parsed_criteria: list[dict[str, str]],
-                              placeholder='*'
-                              ) -> list[dict[str, str]]:
+    def post_process_criteria(
+        parsed_criteria: list[dict[str, str]],
+        placeholder="*",
+    ) -> list[dict[str, str]]:
         """ Split each criterion by semicolon, avoiding false positives, such as
-            within parentheses or quotation marks, also remove '<br>n' bugs
+            within parentheses or quotation marks, also remove "<br>n" bugs
         """
         post_parsed = []
         for criterion in parsed_criteria:
-            # Replace false positive semicolon separators by '*' characters
+            # Replace false positive semicolon separators by "*" characters
             regex = r'\([^)]*\)|\[[^\]]*\]|"[^"]*"|\*[^*]*\*|\'[^\']*\''
-            replace_fn = lambda match: match.group(0).replace(';', placeholder)
-            hidden_criterion = re.sub(regex, replace_fn, criterion['text'])
-            hidden_criterion = re.sub(r'<br>\d+\)?\s*', '', hidden_criterion)
+            replace_fn = lambda match: match.group(0).replace(";", placeholder)
+            hidden_criterion = re.sub(regex, replace_fn, criterion["text"])
+            hidden_criterion = re.sub(r"<br>\d+\)?\s*", "", hidden_criterion)
             
             # Split by semicolon and put back semicolons that were protected
-            splits = hidden_criterion.split(';')
-            splits = [split.replace(placeholder, ';') for split in splits]        
+            splits = hidden_criterion.split(";")
+            splits = [split.replace(placeholder, ";") for split in splits]        
             post_parsed.extend([dict(criterion, text=s.strip()) for s in splits])
         
         # Return post-processed criteria
         return post_parsed
         
         
-@functional_datapipe('write_csv')
+@functional_datapipe("write_csv")
 class CriteriaCSVWriter(IterDataPipe):
     """ Take the output of CriteriaParser (list of dictionaries) and transform
         it into a list of lists of strings, ready to be written to a csv file
@@ -370,54 +373,55 @@ class CriteriaCSVWriter(IterDataPipe):
             yield self.generate_csv_rows(metadata, parsed_criteria)
             
     @staticmethod
-    def generate_csv_rows(metadata: dict[str, str],
-                          parsed_criteria: list[dict[str, str]]
-                          ) -> list[list[str]]:
+    def generate_csv_rows(
+        metadata: dict[str, str],
+        parsed_criteria: list[dict[str, str]],
+    ) -> list[list[str]]:
         """ Generate a set of rows to be written to a csv file
         """
         return [[
-            metadata['criteria_str'] if i == 0 else '',
-            metadata['complexity'] if i == 0 else '',
-            metadata['ct_path'],
-            metadata['label'],
-            metadata['phases'],
-            metadata['conditions'],
-            metadata['condition_ids'],
-            metadata['intervention_ids'],
-            c['category'],
-            c['context'],
-            c['subcontext'],
-            c['text'].replace('≥', '> or equal to')
-                     .replace('≤', '< or equal to')
-                     .strip('- '),
+            metadata["criteria_str"] if i == 0 else "",
+            metadata["complexity"] if i == 0 else "",
+            metadata["ct_path"],
+            metadata["label"],
+            metadata["phases"],
+            metadata["conditions"],
+            metadata["condition_ids"],
+            metadata["intervention_ids"],
+            c["category"],
+            c["context"],
+            c["subcontext"],
+            c["text"].replace("≥", "> or equal to")
+                     .replace("≤", "< or equal to")
+                     .strip("- "),
         ] for i, c in enumerate(parsed_criteria)]
 
 
-@functional_datapipe('read_xlsx_lines')
+@functional_datapipe("read_xlsx_lines")
 class CustomXLSXLineReader(IterDataPipe):
     def __init__(self, dp):
         """ Lalalala
         """
         self.dp = dp
         self.metadata_mapping = {
-            'trialid': 'ct_path',
-            'recruitmentStatusNorm': 'label',
-            'phaseNorm': 'phases',
-            'conditions_': 'conditions',
-            'conditions': 'condition_ids',
-            'interventions': 'intervention_ids',
+            "trialid": "ct_path",
+            "recruitmentStatusNorm": "label",
+            "phaseNorm": "phases",
+            "conditions_": "conditions",
+            "conditions": "condition_ids",
+            "interventions": "intervention_ids",
         }
         mesh_cw_path = os.path.join(cfg["BASE_DATA_DIR"], cfg["MESH_CROSSWALK_NAME"])
-        with open(mesh_cw_path, 'r') as f:
+        with open(mesh_cw_path, "r") as f:
             self.mesh_cw = json.load(f)
         self.intervention_remove = [
-            'Drug: ', 'Biological: ', 'Radiation: ',
-            'Procedure: ', 'Other: ', 'Device: ',
+            "Drug: ", "Biological: ", "Radiation: ",
+            "Procedure: ", "Other: ", "Device: ",
         ]
     
     def __iter__(self):
         for file_name in self.dp:
-            sheet_df = pd.ExcelFile(file_name).parse('metadata')
+            sheet_df = pd.ExcelFile(file_name).parse("metadata")
             crit_str_list = self.extract_criteria_strs(sheet_df)
             metatdata_dict_list = self.extract_metadata_dicts(sheet_df)
             for crit_str, metadata in zip(crit_str_list, metatdata_dict_list):
@@ -427,25 +431,25 @@ class CustomXLSXLineReader(IterDataPipe):
     def extract_criteria_strs(sheet_df: pd.DataFrame) -> list[str]:
         """ Extract criteria text from the dataframe
         """
-        in_crit_strs = sheet_df['inclusionCriteriaNorm'].fillna('')
-        ex_crit_strs = sheet_df['exclusionCriteriaNorm'].fillna('')
-        crit_strs = in_crit_strs + '\n\n' + ex_crit_strs
+        in_crit_strs = sheet_df["inclusionCriteriaNorm"].fillna("")
+        ex_crit_strs = sheet_df["exclusionCriteriaNorm"].fillna("")
+        crit_strs = in_crit_strs + "\n\n" + ex_crit_strs
         return crit_strs
     
     def extract_metadata_dicts(self, sheet_df: pd.DataFrame) -> list[dict]:
         """ Extract metadata information for each criteria text
         """
-        sheet_df['conditions_'] = sheet_df['conditions']
+        sheet_df["conditions_"] = sheet_df["conditions"]
         sheet_df = sheet_df[list(self.metadata_mapping.keys())]
         sheet_df = sheet_df.rename(columns=self.metadata_mapping)
-        split_fn = lambda s: s.split('; ')
+        split_fn = lambda s: s.split("; ")
         map_fn = lambda l: self.convert_unique_ids_to_tree_nums(l)
-        sheet_df['conditions'] = sheet_df['conditions'].apply(split_fn)
-        sheet_df['condition_ids'] = sheet_df['condition_ids'].apply(split_fn)
-        sheet_df['condition_ids'] = sheet_df['condition_ids'].apply(map_fn)
-        sheet_df['intervention_ids'] = sheet_df['intervention_ids'].apply(split_fn)
-        sheet_df['intervention_ids'] = sheet_df['intervention_ids'].apply(map_fn)
-        list_of_metadata = sheet_df.to_dict('records')
+        sheet_df["conditions"] = sheet_df["conditions"].apply(split_fn)
+        sheet_df["condition_ids"] = sheet_df["condition_ids"].apply(split_fn)
+        sheet_df["condition_ids"] = sheet_df["condition_ids"].apply(map_fn)
+        sheet_df["intervention_ids"] = sheet_df["intervention_ids"].apply(split_fn)
+        sheet_df["intervention_ids"] = sheet_df["intervention_ids"].apply(map_fn)
+        list_of_metadata = sheet_df.to_dict("records")
         return list_of_metadata
     
     def convert_unique_ids_to_tree_nums(self, unique_names):
@@ -453,11 +457,11 @@ class CustomXLSXLineReader(IterDataPipe):
             its tree num counterpart, solving the trailing zeros problem
         """
         for r in self.intervention_remove:
-            unique_names = [n.replace(r, '') for n in unique_names]
+            unique_names = [n.replace(r, "") for n in unique_names]
         tree_nums = []
         for n in unique_names:
             try:
-                tree_nums.append(self.mesh_cw[n.replace('000', '', 1)])
+                tree_nums.append(self.mesh_cw[n.replace("000", "", 1)])
             except KeyError:
                 try:
                     tree_nums.append(self.mesh_cw[n])
@@ -466,21 +470,21 @@ class CustomXLSXLineReader(IterDataPipe):
         return tree_nums
     
 
-@functional_datapipe('read_dict_lines')
+@functional_datapipe("read_dict_lines")
 class CustomDictLineReader(IterDataPipe):
     def __init__(self, dp):
         """ Lalalala
         """
         self.dp = dp
         self.metadata_mappings = {
-            'trialid': 'ct_path',
-            'cluster': 'label',
-            'sentence_preprocessed': 'condition_ids',
+            "trialid": "ct_path",
+            "cluster": "label",
+            "sentence_preprocessed": "condition_ids",
         }
     
     def __iter__(self):
         for file_name in self.dp:
-            sheet_df = pd.ExcelFile(file_name).parse('Sheet1')
+            sheet_df = pd.ExcelFile(file_name).parse("Sheet1")
             crit_str_list = self.extract_criteria_strs(sheet_df)
             metatdata_dict_list = self.extract_metadata_dicts(sheet_df)
             for crit_str, metadata in zip(crit_str_list, metatdata_dict_list):
@@ -489,7 +493,7 @@ class CustomDictLineReader(IterDataPipe):
     def extract_criteria_strs(self, sheet_df: pd.DataFrame) -> list[str]:
         """ Extract eligibility criteria from the dataframe
         """
-        sheet_df = sheet_df['sentence']
+        sheet_df = sheet_df["sentence"]
         sheet_df = sheet_df.apply(self.strip_fn)
         sheet_df = sheet_df.apply(self.criterion_format_fn)
         return sheet_df  # .to_list()
@@ -503,10 +507,10 @@ class CustomDictLineReader(IterDataPipe):
     @staticmethod
     def criterion_format_fn(criteria_str: pd.DataFrame) -> pd.DataFrame:
         criteria_dict = {
-            'category': '',
-            'context': '',
-            'subcontext': '',
-            'text': criteria_str
+            "category": "",
+            "context": "",
+            "subcontext": "",
+            "text": criteria_str
         }
         return [criteria_dict]
     
@@ -515,15 +519,15 @@ class CustomDictLineReader(IterDataPipe):
         """
         sheet_df = sheet_df.filter(self.metadata_mappings.keys())
         sheet_df = sheet_df.rename(self.metadata_mappings, axis=1)
-        sheet_df['criteria_str'] = sheet_df.apply(lambda _: '', axis=1)
-        sheet_df['complexity'] = sheet_df.apply(lambda _: '', axis=1)
-        sheet_df['phases'] = sheet_df.apply(lambda _: [''], axis=1)
-        sheet_df['conditions'] = sheet_df.apply(lambda _: [''], axis=1)
-        sheet_df['intervention_ids'] = sheet_df.apply(lambda _: [''], axis=1)
-        sheet_df['condition_ids'] = sheet_df['condition_ids'].apply(
+        sheet_df["criteria_str"] = sheet_df.apply(lambda _: "", axis=1)
+        sheet_df["complexity"] = sheet_df.apply(lambda _: "", axis=1)
+        sheet_df["phases"] = sheet_df.apply(lambda _: [""], axis=1)
+        sheet_df["conditions"] = sheet_df.apply(lambda _: [""], axis=1)
+        sheet_df["intervention_ids"] = sheet_df.apply(lambda _: [""], axis=1)
+        sheet_df["condition_ids"] = sheet_df["condition_ids"].apply(
             lambda s: [s.strip()],
         )
-        list_of_metadata = sheet_df.to_dict('records')
+        list_of_metadata = sheet_df.to_dict("records")
         return list_of_metadata
 
 
@@ -692,6 +696,170 @@ class EligibilityCriteriaFilter(IterDataPipe):
         )
         to_join = (s for s in term_sequence if len(s) > 0)
         return " - ".join(to_join).lower()
+
+
+@functional_datapipe("tokenize")
+class Tokenizer(IterDataPipe):
+    def __init__(self, dp: IterDataPipe, tokenizer):
+        """ Custom data pipeline to tokenize an batch of input strings, keeping
+            the corresponding labels and returning input and label batches
+        """
+        self.dp = dp
+        self.tokenizer = tokenizer
+        
+    def __iter__(self):
+        for batch in self.dp:
+            input_batch, metadata_batch = zip(*batch)
+            yield self.tokenize_fn(input_batch), input_batch, metadata_batch
+    
+    def tokenize_fn(self, batch):
+        return self.tokenizer(
+            batch,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt"
+        )
+
+
+def get_embeddings(embed_model_id: str) -> tuple[np.ndarray, list[str], dict]:
+    """ Generate and save embeddings or load them from a previous run
+    """
+    preprocessed_dir = os.path.join(
+        cfg["BASE_DATA_DIR"],
+        cfg["PREPROCESSED_SUBDIR"],
+        cfg["RAW_INPUT_FORMAT"],
+    )
+    postprocessed_dir = os.path.join(
+        cfg["BASE_DATA_DIR"],
+        cfg["POSTPROCESSED_SUBDIR"],
+        cfg["RAW_INPUT_FORMAT"],
+    )
+    if cfg["LOAD_EMBEDDINGS"]:
+        embeddings, raw_txts, metadatas = load_embeddings(
+            output_dir=postprocessed_dir,
+            embed_model_id=embed_model_id,
+        )
+    else:
+        embeddings, raw_txts, metadatas = generate_embeddings(
+            input_dir=preprocessed_dir,
+            embed_model_id=embed_model_id,
+        )
+        save_embeddings(
+            output_dir=postprocessed_dir,
+            embed_model_id=embed_model_id,
+            embeddings=embeddings,
+            raw_txts=raw_txts,
+            metadatas=metadatas,
+        )
+    return embeddings.numpy(), raw_txts, metadatas
+
+
+def generate_embeddings(
+    input_dir: str,
+    embed_model_id: str,
+) -> tuple[torch.Tensor, list[str], list[dict]]:
+    """ Generate a set of embeddigns from data in a given input directory, using
+        a given model
+    """
+    # Load model and data pipeline
+    logger.info("--- Running model to generate embeddings")
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    model, tokenizer, pooling_fn = get_model_pipeline(embed_model_id)
+    model = model.to(device)
+    ds = get_dataset(input_dir, tokenizer)
+    rs = InProcessReadingService()
+    dl = DataLoader2(ds, reading_service=rs)
+    
+    # Go through data pipeline
+    raw_txts, metadatas = [], []
+    embeddings = torch.empty((0, model.config.hidden_size))
+    for encoded, raw_txt, metadata in tqdm(
+        iterable=dl, leave=False, desc="Processing eligibility criteria dataset"
+    ):
+        
+        # Compute embeddings for this batch
+        encoded = {k: v.to(device) for k, v in encoded.items()}
+        with torch.no_grad():
+            outputs = model(**encoded)
+        ec_embeddings = pooling_fn(encoded, outputs)
+        
+        # Record model outputs (tensor), input texts and corresponding labels
+        embeddings = torch.cat((embeddings, ec_embeddings.cpu()), dim=0)
+        raw_txts.extend(raw_txt)
+        metadatas.extend(metadata)
+        if len(raw_txts) > cfg["MAX_ELIGIBILITY_CRITERIA_SAMPLES"]: break
+    
+    # Make sure gpu memory is made free for report_cluster
+    torch.cuda.empty_cache()
+    
+    # Return embeddings, as well as raw text data and some metadata 
+    return embeddings, raw_txts, metadatas
+    
+
+def save_embeddings(output_dir, embed_model_id, embeddings, raw_txts, metadatas):
+    """ Simple saving function for model predictions
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    ckpt_path = os.path.join(output_dir, "embeddings_%s.pt" % embed_model_id)
+    torch.save(embeddings, ckpt_path)
+    with open(os.path.join(output_dir, "raw_txts.pkl"), "wb") as f:
+        pickle.dump(raw_txts, f)
+    with open(os.path.join(output_dir, "metadatas.pkl"), "wb") as f:
+        pickle.dump(metadatas, f)
+
+
+def load_embeddings(output_dir, embed_model_id):
+    """ Simple loading function for model predictions
+    """
+    logger.info("--- Loading embeddings from previous run")
+    ckpt_path = os.path.join(output_dir, "embeddings_%s.pt" % embed_model_id)
+    embeddings = torch.load(ckpt_path)
+    with open(os.path.join(output_dir, "raw_txts.pkl"), "rb") as f:
+        raw_txts = pickle.load(f)
+    with open(os.path.join(output_dir, "metadatas.pkl"), "rb") as f:
+        metadatas = pickle.load(f)
+    return embeddings, raw_txts, metadatas
+
+
+def get_model_pipeline(embed_model_id: str):
+    """ Select a model and the corresponding tokenizer and embed function
+    """
+    # Model generates token-level embeddings, and output [cls] (+ linear + tanh)
+    if "-sentence" not in embed_model_id:
+        def pooling_fn(encoded_input, model_output):
+            return model_output["pooler_output"]
+        
+    # Model generates sentence-level embeddings directly
+    else:
+        def pooling_fn(encoded_input, model_output):
+            token_embeddings = model_output[0]
+            attn_mask = encoded_input["attention_mask"].unsqueeze(-1)
+            input_expanded = attn_mask.expand(token_embeddings.size()).float()
+            token_sum = torch.sum(token_embeddings * input_expanded, dim=1)
+            return token_sum / torch.clamp(input_expanded.sum(1), min=1e-9)
+            
+    # Return model (sent to correct device) and tokenizer
+    model_str = cfg["EMBEDDING_MODEL_ID_MAP"][embed_model_id]
+    model = AutoModel.from_pretrained(model_str)
+    tokenizer = AutoTokenizer.from_pretrained(model_str)
+    return model, tokenizer, pooling_fn
+
+
+def get_dataset(data_dir, tokenizer):
+    """ Create a pipe from file names to processed data, as a sequence of basic
+        processing functions, with sharding implemented at the file level
+    """
+    ds = FileLister(
+        data_dir, recursive=True, masks=cfg["PREPROCESSED_FILE_MASK"],
+    )\
+        .open_files(mode="t", encoding="utf-8")\
+        .parse_csv()\
+        .sharding_filter()\
+        .filter_eligibility_criteria()\
+        .batch(batch_size=cfg["EMBEDDING_BATCH_SIZE"])\
+        .tokenize(tokenizer=tokenizer)
+    return ds
 
 
 def set_seeds(seed_value=1234):

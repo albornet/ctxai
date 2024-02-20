@@ -21,17 +21,17 @@ Using BERTopic as a backbone, the pipeline performs the following steps:
 2. Clone the repository to your local machine:
 
    ```
-   git clone <repository-url>
-   cd <repository-directory>
+   git clone https://github.com/albornet/ctxai.git  # or git@github.com:albornet/ctxai.git
+   cd ctxai
    ```
 
 3. To build and start the project using Docker Compose, run:
 
    ```
-   docker-compose up --build
+   docker-compose up --build  # or docker-compose build, followed by docker-compose up
    ```
 
-   This command builds the Docker images and starts the services defined in your `docker-compose.yml` file. It's a simple way to get the environment set up without manually installing dependencies.
+   This will build the Docker images and starts the service defined in `docker-compose.yml`. It's a simple way to get the environment set up without manually installing dependencies, and to interact with the pipeline as a webservice (see below).
 
 #### Installing Environment with Droplet
 
@@ -42,30 +42,26 @@ If you prefer not to use Docker or if you're working in an environment where Doc
 2. Create a new Conda environment using the `environment_droplet.yml` file provided in the `environment` directory:
 
    ```
-   conda env create -f environment/environmen_droplet.yml
+   conda env create -f environment/environment_droplet.yml
    ```
 
 3. Activate the new environment:
 
    ```
-   conda activate <environment-name>
+   conda activate ctxai  # or the enviornment name you choose to edit in environment/environment_droplet.yml
    ```
+
+4. Make sure you have your data ready in a .xslx file or in several .xslx files located in the same directory. The data should have at least the following fields: `["trialid", "recruitmentStatusNorm", "phaseNorm", "conditions_", "conditions", "interventions", "inclusionCriteriaNorm", "exclusionCriteriaNorm"]`
 
 ### Executing Program
 
-#### Using Docker
+#### As a webservice (using Docker)
 
-To execute the program using Docker, send a POST request with the desired configuration. For example:
-
-```bash
-curl -X POST -H "Content-Type: application/json" -d @request.json http://localhost:8984/api/execute
-```
-
-Where `request.json` contains the configuration for your execution (key-value pairs that modify any field you would like to modify from the default configuration), similar to the following example (note that "RAW_DATA_PATH", "USER_ID", and "PROJECT_ID" are mandatory fields in the request):
+To execute the pipeline using Docker, send a POST request with the desired configuration. Note that "RAW_DATA_PATH", "USER_ID", and "PROJECT_ID" are mandatory fields in the request, but that you can add any field that you want to update in config.yaml:
 
 ```json
 {
-    "RAW_DATA_PATH": "data/eligibility_criteria.xlsx",
+    "RAW_DATA_PATH": "data/ctxai/eligibility_criteria.xlsx",  // can also be a directory, in which case all ".xlsx" files will be read
     "USER_ID": "1234",
     "PROJECT_ID": "5678",
     "EMBEDDING_MODEL_ID": "pubmed-bert-sentence",
@@ -77,8 +73,13 @@ Where `request.json` contains the configuration for your execution (key-value pa
     "CLUSTER_REPRESENTATION_GPT_PROMPT": "I have a topic that contains the following documents: \n[DOCUMENTS]\nThe topic is described by the following keywords: \n[KEYWORDS]\nBased on the information above, extract a short but highly descriptive topic label of at most 5 words.\nMake sure it is in the following format: topic: <topic label>\n"
 }
 ```
+You can use ARC to send your request to http://localhost:8984/ct-risk/cluster/predict, or you can write your configuration to a file (e.g., `request.json`), and execute:
 
-The container will execute the pipeline and response with an output like this one:
+```bash
+curl -X POST -H "Content-Type: application/json" -d @request.json http://localhost:8984/ct-risk/cluster/predict
+```
+
+After you send the request, the container will execute the pipeline and respond with an output like this one:
 
 ```json 
 {
@@ -101,7 +102,7 @@ The response defines where the results (included formatted cluster output, as we
 
 #### Direct Execution
 
-If you've set up your environment using the Conda environment or prefer direct execution:
+If you've set up your environment using Conda:
 
 1. Ensure all configurations are correctly set in `config.yaml` according to your project's needs.
 
@@ -111,4 +112,4 @@ If you've set up your environment using the Conda environment or prefer direct e
    python src/cluster_data.py
    ```
 
-   This command executes the clustering process based on your configuration, performing the entire pipeline from data preprocessing to clustering and visualization, and generates results in a new "results" directory.
+   This command executes the clustering process based on your configuration, performing the entire pipeline from data preprocessing to clustering and visualization, and writes all outputs in a new `results` directory.
