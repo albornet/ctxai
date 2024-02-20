@@ -5,24 +5,25 @@ try:
     import config
 except:
     from . import config
+
 import logging
-cfg = config.get_config()
 logger = logging.getLogger("cluster")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Utils
 import matplotlib.pyplot as plt
 try:
-    from cluster_utils import ClusterGeneration, ClusterOutput, get_dim_red_model
-    from preprocess_utils import get_embeddings, set_seeds
+    from cluster_utils import ClusterGeneration, ClusterOutput, get_dim_red_model, set_seeds
+    from preprocess_utils import get_embeddings
 except:
-    from .cluster_utils import ClusterGeneration, ClusterOutput, get_dim_red_model
-    from .preprocess_utils import get_embeddings, set_seeds
+    from .cluster_utils import ClusterGeneration, ClusterOutput, get_dim_red_model, set_seeds
+    from .preprocess_utils import get_embeddings
 
 # Clustering and representation
+from openai import OpenAI as OpenAIClient
 from bertopic import BERTopic
 from bertopic.vectorizers import ClassTfidfTransformer
-from bertopic.representation import OpenAI, BaseRepresentation
+from bertopic.representation import OpenAI
 from sklearn.feature_extraction.text import CountVectorizer
 
 
@@ -30,6 +31,9 @@ def main():
     """ If ran as a script, call cluster_data for several models and write
         a summary of results to the output directory
     """
+    # Load current configuration
+    cfg = config.get_config()
+    
     # Logging
     logger.setLevel(logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
@@ -65,8 +69,9 @@ def cluster_data_fn(
     """ Cluster eligibility criteria using embeddings from one language model
     """
     # Initialization
+    cfg = config.get_config()
     output_base_dir = os.path.join(cfg["RESULT_DIR"], cfg["RAW_INPUT_FORMAT"])
-    set_seeds(cfg["RANDOM_STATE"])  # ensure reproducibility
+    set_seeds(cfg["RANDOM_STATE"])  # try to ensure reproducibility
     
     # Generate or load elibibility criterion texts, embeddings, and metadatas
     logger.info("- Retrieving elibility criteria embeddings with %s" % embed_model_id)
@@ -90,7 +95,7 @@ def cluster_data_fn(
     
     # Train model and use it for topic evaluation
     logger.info("- Running bertopic algorithm on eligibility criteria embeddings")
-    topics, probs = topic_model.fit_transform(raw_txts, embeddings)
+    topics, _ = topic_model.fit_transform(raw_txts, embeddings)
     topics = topic_model.reduce_outliers(raw_txts, topics)
     
     # Generate results from the trained model and predictions
@@ -109,6 +114,9 @@ def cluster_data_fn(
 def get_representation_model():
     """ Get a model to represent each cluster-topic with a title
     """
+    # Get current configuration
+    cfg = config.get_config()
+    
     # Prompt chat-gpt with keywords and document content
     if cfg["CLUSTER_REPRESENTATION_MODEL"] == "gpt":
         api_path = os.path.join("data", "api-key-risklick.txt")
@@ -116,9 +124,8 @@ def get_representation_model():
             with open(api_path, "r") as f: api_key = f.read()
         except:
             raise FileNotFoundError("You must have an api-key at %s" % api_path)
-        client = OpenAI(api_key=api_key)
         return OpenAI(
-                client=client,
+                client=OpenAIClient(api_key=api_key),
                 model="gpt-3.5-turbo",
                 exponential_backoff=True, chat=True,
                 prompt=cfg["CLUSTER_REPRESENTATION_GPT_PROMPT"],

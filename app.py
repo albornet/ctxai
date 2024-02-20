@@ -1,10 +1,10 @@
 import logging
 from src import config, parse_data_fn, cluster_data_fn
 from flask import Flask, jsonify, request
+config.load_default_config()  # Make sure this populates a mutable structure
+logger = logging.getLogger("cluster")
 
 app = Flask(__name__)
-config.load_default_config()
-logger = logging.getLogger("cluster")
 
 PATH_PREFIX = "/ct-risk/cluster"
 RULE_PATH = "%s/predict" % PATH_PREFIX

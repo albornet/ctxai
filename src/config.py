@@ -1,30 +1,35 @@
 import yaml
+import threading
+
+configuration = None  # global configuration dictionary
+config_lock = threading.Lock()  # lock for thread-safe configuration updates
 
 
-# Global variable to store the configuration in memory
-_config = None
-
-
-def load_default_config(default_path="config.yaml"):
+def load_default_config(default_path: str = "config.yaml"):
     """ Load default configuration file to memory
     """
-    global _config
-    with open(default_path, 'r') as file:
-        _config = yaml.safe_load(file)
+    global configuration
+    with open(default_path, "r") as file:
+        with config_lock:
+            configuration = yaml.safe_load(file)
 
 
-def update_config(updates):
+def update_config(request_data: dict):
     """ Update the in-memory configuration with a dictionary of updates
     """
-    global _config
-    if _config is None: raise RuntimeError("Configuration not defined yet")
-    for key, value in updates.items():
-        if key in _config:
-            _config[key] = value
+    global configuration
+    with config_lock:
+        for key, value in request_data.items():
+            if isinstance(configuration.get(key), dict) and isinstance(value, dict):
+                configuration[key].update(value)
+            else:
+                configuration[key] = value
 
 
-def get_config(default_path="config.yaml"):
-    """ Get the current in-memory configuration (or default if not existent)
+def get_config(default_path: str = "config.yaml"):
+    """ Get the current in-memory configuration (or default one if non-existent)
     """
-    if _config is None: load_default_config(default_path)
-    return _config
+    global configuration
+    if configuration is None:
+        load_default_config(default_path)
+    return configuration

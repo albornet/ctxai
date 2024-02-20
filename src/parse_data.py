@@ -6,7 +6,6 @@ try:
 except:
     from . import config
 import logging
-cfg = config.get_config()
 logger = logging.getLogger("cluster")
 
 # Utils
@@ -23,8 +22,11 @@ from src.preprocess_utils import (
     CriteriaParser,
     CriteriaCSVWriter,
     CustomXLSXLineReader,
-    set_seeds,
 )
+try:
+    from cluster_utils import set_seeds
+except:
+    from .cluster_utils import set_seeds
 
 
 def main():
@@ -44,6 +46,9 @@ def main():
 def parse_data_fn(raw_data_path: str) -> None:
     """ Parse all CT files into lists of inclusion and exclusion criteria
     """
+    # Get current configuration
+    cfg = config.get_config()
+    
     # Ensure reproducibility (needed here?)
     set_seeds(cfg["RANDOM_STATE"])
     

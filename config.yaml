@@ -10,10 +10,10 @@ LOAD_CLUSTER_RESULTS: false
 LOAD_CLUSTER_TITLES: false
 
 # Directories and data format
-BASE_DATA_DIR: data
 RAW_INPUT_FORMAT: ctxai  # json, ctxai
-PREPROCESSED_SUBDIR: preprocessed  # BASE_DATA_DIR/PREPROCESSED_SUBDIR
-POSTPROCESSED_SUBDIR: postprocessed  # BASE_DATA_DIR/POSTPROCESSED_SUBDIR
+BASE_DATA_DIR: data
+PREPROCESSED_SUBDIR: preprocessed  # <BASE_DATA_DIR>/<PREPROCESSED_SUBDIR>
+POSTPROCESSED_SUBDIR: postprocessed  # <BASE_DATA_DIR>/<POSTPROCESSED_SUBDIR>
 RESULT_DIR: results
 
 # Eligibility criteria pre-processing parameters

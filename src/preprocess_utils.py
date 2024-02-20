@@ -5,7 +5,6 @@ try:
 except:
     from . import config
 import logging
-cfg = config.get_config()
 logger = logging.getLogger("cluster")
 
 # Utils
@@ -13,7 +12,6 @@ import re
 import ast
 import json
 import pickle
-import random
 import numpy as np
 import pandas as pd
 import torch
@@ -77,6 +75,7 @@ class ClinicalTrialFilter(IterDataPipe):
     def __init__(self, dp):
         super().__init__()
         self.dp = dp
+        cfg = config.get_config()
         mesh_cw_path = os.path.join(cfg["BASE_DATA_DIR"], cfg["MESH_CROSSWALK_NAME"])
         with open(mesh_cw_path, "r") as f:
             self.mesh_cw = json.load(f)
@@ -411,6 +410,7 @@ class CustomXLSXLineReader(IterDataPipe):
             "conditions": "condition_ids",
             "interventions": "intervention_ids",
         }
+        cfg = config.get_config()
         mesh_cw_path = os.path.join(cfg["BASE_DATA_DIR"], cfg["MESH_CROSSWALK_NAME"])
         with open(mesh_cw_path, "r") as f:
             self.mesh_cw = json.load(f)
@@ -533,29 +533,22 @@ class CustomDictLineReader(IterDataPipe):
 
 @functional_datapipe("filter_eligibility_criteria")
 class EligibilityCriteriaFilter(IterDataPipe):
-    def __init__(
-        self,
-        dp: IterDataPipe,
-        chosen_phases: list[str]=cfg["CHOSEN_PHASES"],
-        chosen_statuses: list[str]=cfg["CHOSEN_STATUSES"],
-        chosen_criteria: list[str]=cfg["CHOSEN_CRITERIA"],
-        chosen_cond_ids: list[str]=cfg["CHOSEN_COND_IDS"],
-        chosen_itrv_ids: list[str]=cfg["CHOSEN_ITRV_IDS"],
-        chosen_cond_lvl: int=cfg["CHOSEN_COND_LVL"],
-        chosen_itrv_lvl: int=cfg["CHOSEN_ITRV_LVL"],        
-    ) -> None:
+    def __init__(self, dp: IterDataPipe) -> None:
         """ Data pipeline to extract text and labels from a csv file containing
             eligibility criteria and to filter out samples whose clinical trial
             does not include a set of statuses/phases/conditions/interventions
         """
+        # Get current configuration
+        cfg = config.get_config()
+        
         # Initialize filters
-        self.chosen_phases = chosen_phases
-        self.chosen_statuses = chosen_statuses
-        self.chosen_criteria = chosen_criteria
-        self.chosen_cond_ids = chosen_cond_ids
-        self.chosen_itrv_ids = chosen_itrv_ids
-        self.chosen_cond_lvl = chosen_cond_lvl
-        self.chosen_itrv_lvl = chosen_itrv_lvl
+        self.chosen_phases = cfg["CHOSEN_PHASES"]
+        self.chosen_statuses = cfg["CHOSEN_STATUSES"]
+        self.chosen_criteria = cfg["CHOSEN_CRITERIA"]
+        self.chosen_cond_ids = cfg["CHOSEN_COND_IDS"]
+        self.chosen_itrv_ids = cfg["CHOSEN_ITRV_IDS"]
+        self.chosen_cond_lvl = cfg["CHOSEN_COND_LVL"]
+        self.chosen_itrv_lvl = cfg["CHOSEN_ITRV_LVL"]
         
         # Load crosswalk between mesh terms and conditions / interventions
         mesh_cw_inverted_path = \
@@ -725,6 +718,9 @@ class Tokenizer(IterDataPipe):
 def get_embeddings(embed_model_id: str) -> tuple[np.ndarray, list[str], dict]:
     """ Generate and save embeddings or load them from a previous run
     """
+    # Get current configuration
+    cfg = config.get_config()
+    
     preprocessed_dir = os.path.join(
         cfg["BASE_DATA_DIR"],
         cfg["PREPROCESSED_SUBDIR"],
@@ -762,6 +758,9 @@ def generate_embeddings(
     """ Generate a set of embeddigns from data in a given input directory, using
         a given model
     """
+    # Get current configuration
+    cfg = config.get_config()
+    
     # Load model and data pipeline
     logger.info("--- Running model to generate embeddings")
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -825,6 +824,9 @@ def load_embeddings(output_dir, embed_model_id):
 def get_model_pipeline(embed_model_id: str):
     """ Select a model and the corresponding tokenizer and embed function
     """
+    # Get current configuration
+    cfg = config.get_config()
+    
     # Model generates token-level embeddings, and output [cls] (+ linear + tanh)
     if "-sentence" not in embed_model_id:
         def pooling_fn(encoded_input, model_output):
@@ -850,6 +852,9 @@ def get_dataset(data_dir, tokenizer):
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
+    # Get current configuration
+    cfg = config.get_config()
+    
     ds = FileLister(
         data_dir, recursive=True, masks=cfg["PREPROCESSED_FILE_MASK"],
     )\
@@ -859,19 +864,8 @@ def get_dataset(data_dir, tokenizer):
         .filter_eligibility_criteria()\
         .batch(batch_size=cfg["EMBEDDING_BATCH_SIZE"])\
         .tokenize(tokenizer=tokenizer)
+        
     return ds
-
-
-def set_seeds(seed_value=1234):
-    """ Set seed for reproducibility
-    """
-    random.seed(seed_value)
-    np.random.seed(seed_value)
-    torch.manual_seed(seed_value)
-
-    # If using PyTorch and you want determinism
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 
 def clean_memory_fn():

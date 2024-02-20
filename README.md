@@ -5,6 +5,7 @@ This project aims to provide feedback about eligibility criteria of a new study,
 ## Description
 
 Using BERTopic as a backbone, the pipeline performs the following steps:
+
 * First, eligibility criteria are parsed from the CT.gov database and split into a set of individual criteria.
 * Then, a language model pre-trained on a clinical corpus embeds all criteria coming from studies that are similar to a new clinical trial.
 * After dimensionality reduction, these embedded criteria are clustered using HDBScan, and the clusters are used to compute statistics about the selected similar studies.
@@ -14,17 +15,15 @@ Using BERTopic as a backbone, the pipeline performs the following steps:
 
 ### Install Dependencies
 
-#### Using Docker (Recommended)
+#### Using Docker
 
-1. Ensure Docker and Docker Compose are installed on your system. You can download them from [Docker's official website](https://www.docker.com/get-started).
-
+1. Ensure Docker and Docker Compose are installed on your system. You can download them from [Docker&#39;s official website](https://www.docker.com/get-started).
 2. Clone the repository to your local machine:
 
    ```
    git clone https://github.com/albornet/ctxai.git  # or git@github.com:albornet/ctxai.git
    cd ctxai
    ```
-
 3. To build and start the project using Docker Compose, run:
 
    ```
@@ -38,19 +37,16 @@ Using BERTopic as a backbone, the pipeline performs the following steps:
 If you prefer not to use Docker or if you're working in an environment where Docker is not available, you can install the dependencies manually using Conda:
 
 1. Install [Miniconda](https://docs.conda.io/en/latest/miniconda.html) or Anaconda on your system if you haven't already.
-
 2. Create a new Conda environment using the `environment_droplet.yml` file provided in the `environment` directory:
 
    ```
    conda env create -f environment/environment_droplet.yml
    ```
-
 3. Activate the new environment:
 
    ```
    conda activate ctxai  # or the enviornment name you choose to edit in environment/environment_droplet.yml
    ```
-
 4. Make sure you have your data ready in a .xslx file or in several .xslx files located in the same directory. The data should have at least the following fields: `["trialid", "recruitmentStatusNorm", "phaseNorm", "conditions_", "conditions", "interventions", "inclusionCriteriaNorm", "exclusionCriteriaNorm"]`
 
 ### Executing Program
@@ -73,6 +69,7 @@ To execute the pipeline using Docker, send a POST request with the desired confi
     "CLUSTER_REPRESENTATION_GPT_PROMPT": "I have a topic that contains the following documents: \n[DOCUMENTS]\nThe topic is described by the following keywords: \n[KEYWORDS]\nBased on the information above, extract a short but highly descriptive topic label of at most 5 words.\nMake sure it is in the following format: topic: <topic label>\n"
 }
 ```
+
 You can use ARC to send your request to http://localhost:8984/ct-risk/cluster/predict, or you can write your configuration to a file (e.g., `request.json`), and execute:
 
 ```bash
@@ -81,7 +78,7 @@ curl -X POST -H "Content-Type: application/json" -d @request.json http://localho
 
 After you send the request, the container will execute the pipeline and respond with an output like this one:
 
-```json 
+```json
 {
     "cluster_json_path": "results/ctxai/user-1234_project/5678_model/pubmed-bert-sentence/ec_clustering.json",
     "cluster_raw_ec_list_path": "results/ctxai/user-1234_project/5678_model/pubmed-bert-sentence/raw_ec_list.csv",
@@ -105,11 +102,10 @@ The response defines where the results (included formatted cluster output, as we
 If you've set up your environment using Conda:
 
 1. Ensure all configurations are correctly set in `config.yaml` according to your project's needs.
-
 2. From the project's root directory, run:
 
    ```
+   python src/parse_data.py
    python src/cluster_data.py
    ```
-
-   This command executes the clustering process based on your configuration, performing the entire pipeline from data preprocessing to clustering and visualization, and writes all outputs in a new `results` directory.
+   This command performs the entire pipeline from data preprocessing to clustering and visualization based on the configuration.
