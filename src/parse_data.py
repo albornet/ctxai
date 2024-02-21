@@ -6,7 +6,7 @@ try:
 except:
     from . import config
 import logging
-logger = logging.getLogger("cluster")
+logger = logging.getLogger("CTxAI")
 
 # Utils
 import csv
@@ -35,7 +35,10 @@ def main():
     # Logging
     logger.setLevel(logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter("[%(levelname).1s %(asctime)s] %(message)s")
+    formatter = logging.Formatter(
+        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     

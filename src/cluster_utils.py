@@ -115,6 +115,8 @@ class ClusterGeneration:
             cluster_lbls = cluster_info["cluster_ids"]
             metric = 0.0
             metric += 1.0 * silhouette_score(data, cluster_lbls, chunksize=20_000)
+            # metric += 1.0 * ClusterOutput.dunn_index(data, cluster_lbls)
+            # metric += 1.0 * (1.0 - davies_bouldin_score(data, cluster_lbls))
             no_lbl_rate = np.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
             metric += 1.0 * (1.0 - no_lbl_rate)
             return metric
@@ -372,7 +374,7 @@ class ClusterOutput:
         
         # Return formatted BERTopic representatinos
         formatted_titles = {
-            k: get_title(v) if k != -1 else "Undefined cluster"
+            k: get_title(v) if k != -1 else "Sample with unidentified cluster"
             for k, v in topic_model.topic_representations_.items()
         }
         return formatted_titles
@@ -577,7 +579,7 @@ class ClusterOutput:
                 
                 # Cluster data
                 label, label_line_count = self.format_text(
-                    cluster.title, max_length=100, max_line_count=2,
+                    cluster.title, max_length=70, max_line_count=2,
                 )
                 legend_line_count += label_line_count
                 labels.extend([label] * len(cluster.ec_list))
@@ -635,9 +637,13 @@ class ClusterOutput:
                 )
             
             # Polish figure
-            width, height = (1540, 720) if do_top_k else (720, 720)
             legend_font_size = max(1, font_size * 20 / legend_line_count)
             legend_font_size = min(font_size, legend_font_size)  # not bigger
+            width, height = (720, 720)
+            if do_top_k:
+                added_width = 720 / 70 * min(70, max([len(l) for l in labels]))
+                added_width *= legend_font_size / font_size
+                width += added_width
             fig.update_traces(
                 marker=dict(line=dict(color="black", width=1)),
             )
@@ -697,10 +703,10 @@ class ClusterOutput:
         """
         # Shorten criterion type information
         text = text.replace("\n", " ").replace("<br>", " ") \
-            .replace("Inclusion -", "IN:").replace("Inclusion criterion -", "IN:") \
-            .replace("inclusion -", "IN:").replace("inclusion criterion -", "IN:") \
-            .replace("Exclusion -", "EX:").replace("Exclusion criterion -", "EX:") \
-            .replace("exclusion -", "EX:").replace("exclusion criterion -", "EX:")
+            .replace("Inclusion criterion", "IN").replace("Inclusion", "IN") \
+            .replace("inclusion criterion", "IN").replace("inclusion", "IN") \
+            .replace("Exclusion criterion", "EX").replace("Exclusion", "EX") \
+            .replace("exclusion criterion", "EX").replace("exclusion", "EX")
         
         # Let the text as it is if its length is ok
         if len(text) <= max_length:

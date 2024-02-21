@@ -5,7 +5,7 @@ try:
 except:
     from . import config
 import logging
-logger = logging.getLogger("cluster")
+logger = logging.getLogger("CTxAI")
 
 # Utils
 import re
@@ -180,7 +180,7 @@ class CriteriaParser(IterDataPipe):
     """
     def __init__(self, dp):
         super().__init__()
-        logger.info(" - Downloading package punkt to tokenize sentences")
+        logger.info("Downloading package punkt to tokenize sentences")
         nltk.download("punkt", quiet=True)
         self.dp = dp
     
@@ -762,7 +762,7 @@ def generate_embeddings(
     cfg = config.get_config()
     
     # Load model and data pipeline
-    logger.info("--- Running model to generate embeddings")
+    logger.info("Running model to generate embeddings")
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     model, tokenizer, pooling_fn = get_model_pipeline(embed_model_id)
     model = model.to(device)
@@ -811,7 +811,7 @@ def save_embeddings(output_dir, embed_model_id, embeddings, raw_txts, metadatas)
 def load_embeddings(output_dir, embed_model_id):
     """ Simple loading function for model predictions
     """
-    logger.info("--- Loading embeddings from previous run")
+    logger.info("Loading embeddings from previous run")
     ckpt_path = os.path.join(output_dir, "embeddings_%s.pt" % embed_model_id)
     embeddings = torch.load(ckpt_path)
     with open(os.path.join(output_dir, "raw_txts.pkl"), "rb") as f:

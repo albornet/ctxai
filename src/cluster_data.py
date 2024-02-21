@@ -7,7 +7,7 @@ except:
     from . import config
 
 import logging
-logger = logging.getLogger("cluster")
+logger = logging.getLogger("CTxAI")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Utils
@@ -37,17 +37,21 @@ def main():
     # Logging
     logger.setLevel(logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter("[%(levelname).1s %(asctime)s] %(message)s")
+    # formatter = logging.Formatter("[%(levelname).1s %(asctime)s] %(message)s")
+    formatter = logging.Formatter(
+        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     
     # Generate results using one model, then save the results
     cluster_metrics = {}
     for embed_model_id in cfg["EMBEDDING_MODEL_ID_MAP"].keys():
-        logger.info("- Starting with %s" % embed_model_id)
+        logger.info("Starting with %s" % embed_model_id)
         cluster_output = cluster_data_fn(embed_model_id=embed_model_id)
         cluster_metrics[embed_model_id] = cluster_output.cluster_metrics
-        logger.info("- Done with %s" % embed_model_id)
+        logger.info("Done with %s" % embed_model_id)
     
     # Plot final results (comparison of different model embeddings)
     output_path = os.path.join(
@@ -74,7 +78,7 @@ def cluster_data_fn(
     set_seeds(cfg["RANDOM_STATE"])  # try to ensure reproducibility
     
     # Generate or load elibibility criterion texts, embeddings, and metadatas
-    logger.info("- Retrieving elibility criteria embeddings with %s" % embed_model_id)
+    logger.info("Retrieving elibility criteria embeddings with %s" % embed_model_id)
     embeddings, raw_txts, metadatas = get_embeddings(embed_model_id)
     n_samples = len(raw_txts)
     
@@ -94,12 +98,12 @@ def cluster_data_fn(
     )
     
     # Train model and use it for topic evaluation
-    logger.info("- Running bertopic algorithm on eligibility criteria embeddings")
+    logger.info("Running bertopic algorithm on eligibility criteria embeddings")
     topics, _ = topic_model.fit_transform(raw_txts, embeddings)
     topics = topic_model.reduce_outliers(raw_txts, topics)
     
     # Generate results from the trained model and predictions
-    logger.info("- Writing clustering results with bertopic titles")
+    logger.info("Writing clustering results with bertopic titles")
     return ClusterOutput(
         output_base_dir=output_base_dir,
         topic_model=topic_model,
@@ -119,11 +123,14 @@ def get_representation_model():
     
     # Prompt chat-gpt with keywords and document content
     if cfg["CLUSTER_REPRESENTATION_MODEL"] == "gpt":
-        api_path = os.path.join("data", "api-key-risklick.txt")
+        api_path = os.path.join("data", "api-key.txt")
         try:
             with open(api_path, "r") as f: api_key = f.read()
         except:
-            raise FileNotFoundError("You must have an api-key at %s" % api_path)
+            raise FileNotFoundError(" ".join([
+                "To use CLUSTER_REPRESENTATION_MODEL = gpt,",
+                "you must have an api-key at %s" % api_path,
+            ]))
         return OpenAI(
                 client=OpenAIClient(api_key=api_key),
                 model="gpt-3.5-turbo",
