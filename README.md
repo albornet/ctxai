@@ -2,6 +2,8 @@
 
 This project aims to provide feedback about eligibility criteria of a new study, based on the history of similar clinical trials.
 
+![Alt text](images/pipeline.png)
+
 ## Description
 
 Using BERTopic as a backbone, the pipeline performs the following steps:
@@ -53,11 +55,11 @@ If you prefer not to use Docker or if you're working in an environment where Doc
 
 #### As a webservice (using Docker)
 
-To execute the pipeline using Docker, send a POST request with the desired configuration. Note that "RAW_DATA_PATH", "USER_ID", and "PROJECT_ID" are mandatory fields in the request, but that you can add any field that you want to update in config.yaml:
+To execute the pipeline using Docker, send a POST request with the desired configuration. Note that "RAW_DATA_PATH", "USER_ID", and "PROJECT_ID" are mandatory fields in the request. Also note that "RAW_DATA_PATH" can also be a file or a directory. In the latter case, all ".xlsx" files in the directory will be read. You can add any field that you want to update in config.yaml:
 
 ```json
 {
-    "RAW_DATA_PATH": "data/ctxai/eligibility_criteria.xlsx",  // can also be a directory, in which case all ".xlsx" files will be read
+    "RAW_DATA_PATH": "data/ctxai/eligibility_criteria.xlsx",
     "USER_ID": "1234",
     "PROJECT_ID": "5678",
     "EMBEDDING_MODEL_ID": "pubmed-bert-sentence",
