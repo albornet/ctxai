@@ -2,11 +2,11 @@
 
 This project aims to provide feedback about eligibility criteria of a new study, based on the history of similar clinical trials.
 
-![Alt text](images/pipeline.png)
+![Pipeline](images/pipeline.png)
 
 ## Description
 
-Using BERTopic as a backbone, the pipeline performs the following steps:
+Using [BERTopic](https://maartengr.github.io/BERTopic/index.html "BERTopic github page") as a backbone, the pipeline performs the following steps:
 
 * First, eligibility criteria are parsed from the CT.gov database and split into a set of individual criteria.
 * Then, a language model pre-trained on a clinical corpus embeds all criteria coming from studies that are similar to a new clinical trial.
