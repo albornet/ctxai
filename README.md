@@ -68,7 +68,7 @@ To execute the pipeline using Docker, send a POST request with the desired confi
     "PLOT_DIM_RED_ALGO": "tsne",
     "PLOT_RED_DIM": 2,
     "CLUSTER_REPRESENTATION_MODEL": "gpt",
-    "CLUSTER_REPRESENTATION_GPT_PROMPT": "I have a topic that contains the following documents: \n[DOCUMENTS]\nThe topic is described by the following keywords: \n[KEYWORDS]\nBased on the information above, extract a short but highly descriptive topic label of at most 5 words.\nMake sure it is in the following format: topic: <topic label>\n"
+    "CLUSTER_REPRESENTATION_GPT_PROMPT": "I have a topic that contains the following documents:\n[DOCUMENTS]\nThe topic is described by the following keywords:\n[KEYWORDS]\nBased on the information above, extract a short but highly descriptive topic label of at most 5 words.\nMake sure it is in the following format: <topic type>: <topic label>, where <topic type> is either 'Inclusion criterion: ' or 'Exclustion criterion: '"
 }
 ```
 
