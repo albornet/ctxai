@@ -10,24 +10,31 @@ logger = logging.getLogger("CTxAI")
 
 # Utils
 import csv
+import json
 import torchdata.datapipes.iter as dpi
 from tqdm import tqdm
+from typing import Iterator
 from torchdata.dataloader2 import (
     DataLoader2,
     InProcessReadingService,
     MultiProcessingReadingService,
 )
-from src.preprocess_utils import (
-    ClinicalTrialFilter,
-    CriteriaParser,
-    CriteriaCSVWriter,
-    CustomXLSXLineReader,
-)
 try:
     from cluster_utils import set_seeds
+    from preprocess_utils import (
+        ClinicalTrialFilter,
+        CriteriaParser,
+        CriteriaCSVWriter,
+        CustomXLSXLineReader,
+    )
 except:
     from .cluster_utils import set_seeds
-
+    from .preprocess_utils import (
+        ClinicalTrialFilter,
+        CriteriaParser,
+        CriteriaCSVWriter,
+        CustomXLSXLineReader,
+    )
 
 def main():
     """ Main script (if not run from a web-service)
@@ -42,8 +49,16 @@ def main():
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     
+    # Get current configuration and raw data path
+    cfg = config.get_config()
+    raw_data_path = os.path.join(
+        cfg["BASE_DATA_DIR"],
+        cfg["RAW_DATA_SUBDIR"],
+        cfg["RAW_INPUT_FORMAT"],
+    )
+    
     # Parse criteria (main function not implemented yet)
-    raise NotImplementedError
+    parse_data_fn(raw_data_path=raw_data_path)
 
 
 def parse_data_fn(raw_data_path: str) -> None:
@@ -87,7 +102,7 @@ def parse_data_fn(raw_data_path: str) -> None:
             with open(csv_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerows(data)
-        
+                
         # Close data pipeline
         dl.shutdown()
         
@@ -100,7 +115,7 @@ def get_dataset(data_path: str, input_format: str) -> dpi.IterDataPipe:
     if os.path.isdir(data_path):
         masks = "*.%s" % ("json" if input_format == "json" else "xlsx")
         files = dpi.FileLister(data_path, recursive=True, masks=masks)
-    
+        
     # Load correct file from a file path
     elif os.path.isfile(data_path):
         if not data_path.endswith(("json", "xlsx")):
@@ -114,7 +129,7 @@ def get_dataset(data_path: str, input_format: str) -> dpi.IterDataPipe:
     # Load data inside each file
     if input_format == "json":
         jsons = dpi.FileOpener(files, encoding="utf-8")
-        dicts = dpi.JsonParser(jsons)
+        dicts = CustomJsonParser(jsons)
         raw_samples = ClinicalTrialFilter(dicts)
     elif input_format == "ctxai":
         raw_samples = CustomXLSXLineReader(files)
@@ -127,6 +142,19 @@ def get_dataset(data_path: str, input_format: str) -> dpi.IterDataPipe:
     written = CriteriaCSVWriter(parsed_samples)
     return written
 
+
+class CustomJsonParser(dpi.JsonParser):
+    """ Modificaion of dpi.JsonParser that handles empty files without error
+    """
+    def __iter__(self) -> Iterator[tuple[str, dict]]:
+        for file_name, stream in self.source_datapipe:
+            try:
+                data = stream.read()
+                stream.close()
+                yield file_name, json.loads(data, **self.kwargs)
+            except json.decoder.JSONDecodeError:
+                print("Empty json file - skipping to next file.")
+            
 
 if __name__ == "__main__":
     main()

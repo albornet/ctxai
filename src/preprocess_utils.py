@@ -186,16 +186,19 @@ class CriteriaParser(IterDataPipe):
     
     def __iter__(self):
         for metadata, criteria_str in self.dp:
-            parsed_criteria, complexity = self.parse_criteria(criteria_str)
-            metadata["complexity"] = complexity
-            metadata["criteria_str"] = criteria_str
-            yield metadata, parsed_criteria
             
-    def parse_criteria(self,
-                       criteria_str: str,
-                       is_section_title_thresh: float=0.6,
-                       is_bug_thresh: int=5,
-                       ) -> list[dict[str, str]]:
+            parsed_criteria, complexity = self.parse_criteria(criteria_str)
+            if len(parsed_criteria) > 0:
+                metadata["complexity"] = complexity
+                metadata["criteria_str"] = criteria_str
+                yield metadata, parsed_criteria
+            
+    def parse_criteria(
+        self,
+        criteria_str: str,
+        is_section_title_thresh: float=0.6,
+        is_bug_thresh: int=5,
+    ) -> list[dict[str, str]]:
         """ Parse a criteria paragraph into a set of criterion sentences,
             categorized as inclusion, exclusion, or undetermined criterion
         """
