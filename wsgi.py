@@ -7,7 +7,7 @@ PORT_NUMBER = 8984
 
 
 def main():
-    set_logger()   
+    set_logger()
     app.run(debug=False, host=HOST_ADDRESS, port=PORT_NUMBER)
 
 
