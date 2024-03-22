@@ -4,20 +4,18 @@ PROJECT_ID: null
 RANDOM_STATE: 1234
 LOAD_PREPROCESSED_DATA: false
 LOAD_EMBEDDINGS: false
-LOAD_REDUCED_EMBEDDINGS: false
-LOAD_OPTUNA_RESULTS: false
-LOAD_CLUSTER_RESULTS: false
-LOAD_CLUSTER_TITLES: false
+LOAD_BERTOPIC_RESULTS: false
 
 # Directories and data format
-RAW_INPUT_FORMAT: ctxai  # json, ctxai
 BASE_DATA_DIR: data
+RAW_INPUT_FORMAT: ctxai  # ctgov, ctxai
+RAW_DATA_SUBDIR: raw_files  # ONLY USED WHEN RUN AS PYTHON SCRIPT FOR FORMAT = ctgov
 PREPROCESSED_SUBDIR: preprocessed  # <BASE_DATA_DIR>/<PREPROCESSED_SUBDIR>
 POSTPROCESSED_SUBDIR: postprocessed  # <BASE_DATA_DIR>/<POSTPROCESSED_SUBDIR>
 RESULT_DIR: results
 
 # Eligibility criteria pre-processing parameters
-NUM_PARSE_WORKERS: 12  # 0 for no multi processing
+NUM_PARSE_WORKERS: 19  # 0 for no multi processing
 PREPROCESSED_DATA_HEADERS:
   - criteria paragraph
   - complexity
@@ -35,18 +33,18 @@ PREPROCESSED_FILE_MASK: "*criteria.csv"
 MESH_CROSSWALK_NAME: mesh_crosswalk.json
 MESH_CROSSWALK_INVERTED_NAME: mesh_crosswalk_inverted.json
 
-# Eligibility criteria filtering parameters ([] to ignore filters)
+# Eligibility criteria filtering parameters
 CHOSEN_STATUSES: []  # [completed, terminated]  # [completed, suspended, withdrawn, terminated, unknown status]
 CHOSEN_CRITERIA: []  # [in]
 CHOSEN_PHASES: []  # [Phase 2]
 CHOSEN_COND_IDS: []  # Infections [C01] // Neoplasms [C04] // Cardiovascular Diseases [C14] // Immune System Diseases [C20]
 CHOSEN_ITRV_IDS: []  # [D02]
-CHOSEN_COND_LVL: null  # 4  # None to ignore this one
-CHOSEN_ITRV_LVL: null  # 3  # None to ignore this one
+CHOSEN_COND_LVL: null  # null to ignore
+CHOSEN_ITRV_LVL: null  # null to ignore
 STATUS_MAP: null
 
 # Eligibility criteria embedding parameters
-MAX_ELIGIBILITY_CRITERIA_SAMPLES: 10_000_000  # just big number for now
+MAX_ELIGIBILITY_CRITERIA_SAMPLES: 100_000  # to avoid dumping core
 EMBEDDING_BATCH_SIZE: 64
 EMBEDDING_MODEL_ID_MAP:
   pubmed-bert-sentence: pritamdeka/S-PubMedBert-MS-MARCO
@@ -85,7 +83,7 @@ PLOT_RED_DIM: 2  # 2 or 3 (dim = 3 cannot use CuML, i.e., is slow)
 PLOT_RDM_METRIC: null  # null, correlation, euclidean  # NOT USED FOR NOW
 N_ITER_MAX_TSNE: 10000
 CLUSTER_REPRESENTATION_MODEL: null  # null, gpt -> null will just use bertopic's topic keywords
-CLUSTER_REPRESENTATION_TOP_N_WORDS_PER_TOPIC: 10  # BERTopic default = 10
+CLUSTER_REPRESENTATION_TOP_N_WORDS_PER_TOPIC: 5  # BERTopic default = 10
 CLUSTER_REPRESENTATION_GPT_PROMPT: |
   I have a topic that contains the following documents: 
   [DOCUMENTS]

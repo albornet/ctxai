@@ -1,12 +1,10 @@
 # Config
 import os
-import sys
 try:
     import config
 except:
     from . import config
-import logging
-logger = logging.getLogger("CTxAI")
+logger = config.CTxAILogger("INFO")
 
 # Utils
 import csv
@@ -36,19 +34,10 @@ except:
         CustomXLSXLineReader,
     )
 
+
 def main():
     """ Main script (if not run from a web-service)
     """
-    # Logging
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
-    formatter = logging.Formatter(
-        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    
     # Get current configuration and raw data path
     cfg = config.get_config()
     raw_data_path = os.path.join(
@@ -72,15 +61,15 @@ def parse_data_fn(raw_data_path: str) -> None:
     
     # Load parsed data from previous run
     if cfg["LOAD_PREPROCESSED_DATA"]:
-        logging.info(" - Eligibility criteria already parsed, skipping this step")
+        logger.info("Eligibility criteria already parsed, skipping this step")
     
-    # Parse data using torchdata logic
+    # Parse data using torchdata pipeline
     else:
-        logging.info(" - Building criteria from raw clinical trial texts")
+        logger.info("Parsing criteria from raw clinical trial texts")
         
         # Initialize output file with data headers
         preprocessed_dir = os.path.join(
-            cfg["BASE_DATA_DIR"], cfg["POSTPROCESSED_SUBDIR"], cfg["RAW_INPUT_FORMAT"])
+            cfg["BASE_DATA_DIR"], cfg["PREPROCESSED_SUBDIR"], cfg["RAW_INPUT_FORMAT"])
         os.makedirs(preprocessed_dir, exist_ok=True)
         csv_path = os.path.join(preprocessed_dir, "parsed_criteria.csv")
         with open(csv_path, "w", newline="") as f:
@@ -105,6 +94,7 @@ def parse_data_fn(raw_data_path: str) -> None:
                 
         # Close data pipeline
         dl.shutdown()
+        logger.info("All criteria have been parsed")
         
     
 def get_dataset(data_path: str, input_format: str) -> dpi.IterDataPipe:
@@ -113,13 +103,11 @@ def get_dataset(data_path: str, input_format: str) -> dpi.IterDataPipe:
     """
     # Load correct files from a directory
     if os.path.isdir(data_path):
-        masks = "*.%s" % ("json" if input_format == "json" else "xlsx")
+        masks = "*.%s" % ("json" if input_format == "ctgov" else "xlsx")
         files = dpi.FileLister(data_path, recursive=True, masks=masks)
         
     # Load correct file from a file path
     elif os.path.isfile(data_path):
-        if not data_path.endswith(("json", "xlsx")):
-            raise ValueError("File format not supported")
         files = dpi.IterableWrapper([data_path])
     
     # Handle exception
@@ -127,7 +115,7 @@ def get_dataset(data_path: str, input_format: str) -> dpi.IterDataPipe:
         raise FileNotFoundError(f"{data_path} is neither a file nor a directory")
     
     # Load data inside each file
-    if input_format == "json":
+    if input_format == "ctgov":
         jsons = dpi.FileOpener(files, encoding="utf-8")
         dicts = CustomJsonParser(jsons)
         raw_samples = ClinicalTrialFilter(dicts)

@@ -413,8 +413,10 @@ class ClusterOutput:
         """ Compute low-dimensional plot data using t-SNE algorithm, or take it
             directly from the cluster data if it has the right dimension
         """
+        # if self.cfg["CLUSTER_RED_DIM"] == self.cfg["PLOT_RED_DIM"] \
+        # and self.cfg["CLUSTER_DIM_RED_ALGO"] == self.cfg["PLOT_DIM_RED_ALGO"] \
+        # or self.cfg["CLUSTER_DIM_RED_ALGO"] is None:
         if self.cfg["CLUSTER_RED_DIM"] == self.cfg["PLOT_RED_DIM"] \
-        and self.cfg["CLUSTER_DIM_RED_ALGO"] == self.cfg["PLOT_DIM_RED_ALGO"] \
         or self.cfg["CLUSTER_DIM_RED_ALGO"] is None:
             return self.cluster_info["cluster_data"]
         else:
@@ -506,35 +508,45 @@ class ClusterOutput:
         
         # Create a new sample for each [phase, cond, itrv] label combination
         cluster_lbls = cluster_lbls.tolist()
-        dupl_cluster_lbls = []
-        dupl_true_lbls = []
+        dupl_lbls = {"dept": [], "true": [], "ceil": []}
         for cluster_lbl, phases, conds, itrvs in\
             zip(cluster_lbls, self.phases, self.conds, self.itrvs):
             true_lbl_combinations = list(product(phases, conds, itrvs))
+            ceil_lbl_combination = true_lbl_combinations[0]
             for true_lbl_combination in true_lbl_combinations:
-                dupl_cluster_lbls.append(cluster_lbl)
-                dupl_true_lbls.append("- ".join(true_lbl_combination))
-        
+                dupl_lbls["dept"].append(cluster_lbl)
+                dupl_lbls["true"].append("- ".join(true_lbl_combination))
+                dupl_lbls["ceil"].append("- ".join(ceil_lbl_combination))
+                
         # Create a set of int labels for label-dependent metrics
-        encoder = LabelEncoder()
-        true_lbls = encoder.fit_transform(dupl_true_lbls).astype(np.int32)
-        pred_lbls = np.array(dupl_cluster_lbls, dtype=np.int32)
+        true_encoder = LabelEncoder()
+        true_lbls = true_encoder.fit_transform(dupl_lbls["true"]).astype(np.int32)
         
         # Evaluate clustering quality (label-dependent)
-        homogeneity, completeness, v_measure = \
-            homogeneity_completeness_v_measure(true_lbls, pred_lbls)
-        cluster_metrics["label_dept"] = {
-            "Homogeneity": homogeneity,
-            "Completeness": completeness,
-            "V measure": v_measure,
-            "MI score": mutual_info_score(true_lbls, pred_lbls),
-            "AMI score": adjusted_mutual_info_score(true_lbls, pred_lbls),
-            "AR score": adjusted_rand_score(true_lbls, pred_lbls),
-        }
+        for pred_type in ["dept", "ceil", "rand"]:
+            
+            # Load prediction labels of the correct type
+            if pred_type == "rand":
+                pred_lbls = true_lbls.copy()
+                np.random.shuffle(pred_lbls)
+            else:
+                encoder = LabelEncoder()
+                pred_lbls = encoder.fit_transform(dupl_lbls[pred_type]).astype(np.int32)
+            
+            # Compute metrics with these labels
+            homogeneity, completeness, v_measure = homogeneity_completeness_v_measure(true_lbls, pred_lbls)
+            cluster_metrics["label_%s" % pred_type] = {
+                "Homogeneity": homogeneity,
+                "Completeness": completeness,
+                "V measure": v_measure,
+                "MI score": mutual_info_score(true_lbls, pred_lbls),
+                "AMI score": adjusted_mutual_info_score(true_lbls, pred_lbls),
+                "AR score": adjusted_rand_score(true_lbls, pred_lbls),
+            }
         
         # Update cluster_info main dict with cluster_metrics
         cluster_metrics["n_samples"] = len(cluster_lbls)
-        cluster_metrics["n_duplicated_samples"] = len(dupl_cluster_lbls)
+        cluster_metrics["n_duplicated_samples"] = len(dupl_lbls["dept"])
         
         return cluster_metrics  # cluster_info.update({"metrics": cluster_metrics})
     
@@ -679,7 +691,7 @@ class ClusterOutput:
             if not is_3d:  # i.e., is_2d
                 for trace in fig.data:
                     if 'size' in trace.marker:
-                        trace.marker.size = [s / 3 for s in trace.marker.size]
+                        trace.marker.size = [s / 10 for s in trace.marker.size]
             
             # Save image and sets plot_path
             plot_tag = "top_%i" % top_k if do_top_k else "all"
@@ -811,12 +823,14 @@ def get_dim_red_model(algorithm: str, dim: int, n_samples: int):
     
     # Uniform manifold approximation and projection
     elif algorithm == "umap":
+        n_neighbors = min(int(n_samples / 400 + 1), 90)
         return CUML_UMAP(
             n_components=dim,
             random_state=cfg["RANDOM_STATE"],
-            n_neighbors=15,
-            min_dist=0.0,
-            metric="cosine",
+            n_neighbors=90,  # same as for t-SNE (see below) - UMAP default = 15
+            learning_rate=200.0,  # same as for t-SNE (see below) - UMAP default = 1.0
+            min_dist=0.0,  # same as for t-SNE (see below) - UMAP default = 0.1
+            metric="cosine",  # same as for t-SNE (see below) - UMAP default = "euclidean"
         )
     
     # Principal component analysis

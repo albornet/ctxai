@@ -1,4 +1,3 @@
-import logging
 from app import app
 
 
@@ -7,22 +6,8 @@ PORT_NUMBER = 8984
 
 
 def main():
-    set_logger()
     app.run(debug=False, host=HOST_ADDRESS, port=PORT_NUMBER)
 
-
-def set_logger(name="CTxAI"):
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    logger.propagate = 0  # prevent logging from propagating to the root logger
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    
 
 if __name__ == "__main__":
     main()

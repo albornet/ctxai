@@ -1,17 +1,15 @@
 # Config
 import os
-import sys
 try:
     import config
 except:
     from . import config
-
-import logging
-logger = logging.getLogger("CTxAI")
+logger = config.CTxAILogger("INFO")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Utils
 import matplotlib.pyplot as plt
+import torch
 try:
     from cluster_utils import ClusterGeneration, ClusterOutput, get_dim_red_model, set_seeds
     from preprocess_utils import get_embeddings
@@ -33,17 +31,6 @@ def main():
     """
     # Load current configuration
     cfg = config.get_config()
-    
-    # Logging
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
-    # formatter = logging.Formatter("[%(levelname).1s %(asctime)s] %(message)s")
-    formatter = logging.Formatter(
-        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
     
     # Generate results using one model, then save the results
     cluster_metrics = {}
@@ -74,33 +61,31 @@ def cluster_data_fn(
     """
     # Initialization
     cfg = config.get_config()
-    output_base_dir = os.path.join(cfg["RESULT_DIR"], cfg["RAW_INPUT_FORMAT"])
     set_seeds(cfg["RANDOM_STATE"])  # try to ensure reproducibility
+    output_base_dir = os.path.join(cfg["RESULT_DIR"], cfg["RAW_INPUT_FORMAT"])
+    bertopic_ckpt_path = os.path.join(
+        cfg["BASE_DATA_DIR"],
+        cfg["POSTPROCESSED_SUBDIR"],
+        cfg["RAW_INPUT_FORMAT"],
+        "bertopic_model",
+    )
     
     # Generate or load elibibility criterion texts, embeddings, and metadatas
     logger.info("Retrieving elibility criteria embeddings with %s" % embed_model_id)
     embeddings, raw_txts, metadatas = get_embeddings(embed_model_id)
-    n_samples = len(raw_txts)
     
-    # Create BERTopic model
-    topic_model = BERTopic(
-        top_n_words=cfg["CLUSTER_REPRESENTATION_TOP_N_WORDS_PER_TOPIC"],
-        umap_model=get_dim_red_model(
-            cfg["CLUSTER_DIM_RED_ALGO"],
-            cfg["CLUSTER_RED_DIM"],
-            n_samples,
-        ),
-        hdbscan_model=ClusterGeneration(),
-        vectorizer_model=CountVectorizer(stop_words="english"),
-        ctfidf_model=ClassTfidfTransformer(),
-        representation_model=get_representation_model(),
-        verbose=True,
-    )
+    # Generate cluster representation with BERTopic
+    if not cfg["LOAD_BERTOPIC_RESULTS"]:
+        topic_model = train_bertopic_model(raw_txts, embeddings)
+        if cfg["RAW_INPUT_FORMAT"] == "ctgov":
+            topic_model.save(bertopic_ckpt_path)
     
-    # Train model and use it for topic evaluation
-    logger.info("Running bertopic algorithm on eligibility criteria embeddings")
-    topics, _ = topic_model.fit_transform(raw_txts, embeddings)
-    topics = topic_model.reduce_outliers(raw_txts, topics)
+    # Load BERTopic cluster representation from previous run (only for ctgov)
+    else:
+        if cfg["RAW_INPUT_FORMAT"] != "ctgov":
+            raise ValueError("BERTopic load mode enabled only for raw ctgov data")
+        logger.info("Loading bertopic model trained on eligibility criteria embeddings")
+        topic_model = BERTopic.load(bertopic_ckpt_path)
     
     # Generate results from the trained model and predictions
     logger.info("Writing clustering results with bertopic titles")
@@ -113,8 +98,37 @@ def cluster_data_fn(
         user_id=user_id,
         project_id=project_id,
     )
+
+
+def train_bertopic_model(
+    raw_txts: list[str],
+    embeddings: torch.Tensor,
+):
+    """ Train a BERTopic model
+    """
+    # Create BERTopic model
+    cfg = config.get_config()
+    topic_model = BERTopic(
+        top_n_words=cfg["CLUSTER_REPRESENTATION_TOP_N_WORDS_PER_TOPIC"],
+        umap_model=get_dim_red_model(
+            cfg["CLUSTER_DIM_RED_ALGO"],
+            cfg["CLUSTER_RED_DIM"],
+            len(embeddings),
+        ),
+        hdbscan_model=ClusterGeneration(),
+        vectorizer_model=CountVectorizer(stop_words="english"),
+        ctfidf_model=ClassTfidfTransformer(),
+        representation_model=get_representation_model(),
+        verbose=True,
+    )
     
-    
+    # Train BERTopic model using raw text documents and pre-computed embeddings
+    logger.info("Running bertopic algorithm on eligibility criteria embeddings")
+    topic_model = topic_model.fit(raw_txts, embeddings)
+    # topics = topic_model.reduce_outliers(raw_txts, topics)
+    return topic_model
+
+
 def get_representation_model():
     """ Get a model to represent each cluster-topic with a title
     """
@@ -151,25 +165,27 @@ def plot_model_comparison(metrics: dict, output_path: str):
     """ Generate a comparison plot between models, based on how model embeddings
         produce good clusters
     """
-    # Load, parse, and format data
+    # Load, parse, and normalize data
     to_plot = [
         "Silhouette score", "DB index", "Dunn index", "MI score",
         "AMI score", "Homogeneity", "Completeness", "V measure",
     ]
-    def filter_fn(d: dict[str, dict]) -> dict:
-        d_free, d_dept = d["label_free"], d["label_dept"]
+    def norm_fn(d: dict[str, dict]) -> dict:
+        d_free, d_dept = d["label_free"], d["label_dept"],
+        d_ceil, d_rand = d["label_ceil"], d["label_rand"]
         d_free = {k: v for k, v in d_free.items() if k in to_plot}
-        d_free = {k: v / 10 if k == "DB index" else v for k, v in d_free.items()}
-        d_dept = {k: v for k, v in d_dept.items() if k in to_plot}
-        d_dept = {k: v / 5 if k == "MI score" else v for k, v in d_dept.items()}
+        d_dept = {
+            # k: (d_dept[k] - d_rand[k]) / (d_ceil[k] - d_rand[k])  # normalized! 0 = d_rand, 1 = d_ceil
+            # k: d_dept[k] / d_ceil[k]
+            k: d_dept[k]
+            for k in d_dept.keys() if k in to_plot
+        }
         d_free.update(d_dept)
         return d_free
-    metrics = {k: filter_fn(v) for k, v in metrics.items()}
+    metrics = {k: norm_fn(v) for k, v in metrics.items()}
     
     # Retrieve metric labels and model names
     labels = list(next(iter(metrics.values())).keys())
-    labels = ["%s / 10.0" % l if l == "DB index" else l for l in labels]
-    labels = ["%s / 5.0" % l if l == "MI score" else l for l in labels]
     num_models = len(metrics.keys())
     width = 0.8 / num_models  # Adjust width based on number of models
     

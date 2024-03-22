@@ -4,8 +4,7 @@ try:
     import config
 except:
     from . import config
-import logging
-logger = logging.getLogger("CTxAI")
+logger = config.CTxAILogger("INFO")
 
 # Utils
 import re
@@ -777,7 +776,7 @@ def generate_embeddings(
     raw_txts, metadatas = [], []
     embeddings = torch.empty((0, model.config.hidden_size))
     for encoded, raw_txt, metadata in tqdm(
-        iterable=dl, leave=False, desc="Processing eligibility criteria dataset"
+        iterable=dl, leave=False, desc="Embedding eligibility criteria"
     ):
         
         # Compute embeddings for this batch
