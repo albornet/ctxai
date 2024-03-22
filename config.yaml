@@ -72,6 +72,7 @@ OPTUNA_PARAM_RANGES:
   alpha_secondary: [0.1, 10.0]
 
 # Cluster generation parameters
+DO_EVALUATE_CLUSTERING: false  # if true, will generate metrics for the clustering
 DO_SUBCLUSTERIZE: true  # if true, try to cluster further each computed cluster
 CLUSTER_DIM_RED_ALGO: umap  # pca, umap, tsne, null (umap advised here)
 CLUSTER_RED_DIM: 10  # becomes full-dim if CLUSTER_DIM_RED_ALGO == null

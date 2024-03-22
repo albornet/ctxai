@@ -48,7 +48,8 @@ def main():
         "project-%s" % cfg["PROJECT_ID"],
         "model-comparison.png",
     )
-    plot_model_comparison(cluster_metrics, output_path)
+    if cfg["DO_EVALUATE_CLUSTERING"]:
+        plot_model_comparison(cluster_metrics, output_path)
     logger.info("Model comparison finished!")
 
 

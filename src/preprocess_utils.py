@@ -179,7 +179,7 @@ class CriteriaParser(IterDataPipe):
     """
     def __init__(self, dp):
         super().__init__()
-        logger.info("Downloading package punkt to tokenize sentences")
+        logger.info("Loading package punkt to tokenize sentences")
         nltk.download("punkt", quiet=True)
         self.dp = dp
     

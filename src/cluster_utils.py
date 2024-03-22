@@ -331,7 +331,7 @@ class ClusterOutput:
         self.cluster_info = self.get_cluster_info(topic_model)
         self.cluster_titles = self.get_cluster_titles(topic_model)
         self.plot_data = self.get_plot_data()
-        self.cluster_metrics = self.evaluate_clustering()        
+        self.cluster_metrics = self.evaluate_clustering()
         self.statistics = self.compute_cluster_statistics()
         self.cluster_instances = self.get_cluster_instances()
         
@@ -477,7 +477,7 @@ class ClusterOutput:
             
         return cluster_medoids
     
-    @staticmethod    
+    @staticmethod
     def compute_medoid(data: np.ndarray) -> np.ndarray:
         """ Compute medoids of a subset of samples of shape (n_samples, n_features)
             Distance computations are made with dask to mitigate memory requirements
@@ -493,6 +493,10 @@ class ClusterOutput:
         """ Run final evaluation of clusters, based on phase(s), condition(s), and
             interventions(s). Duplicate each samples for any combination.    
         """
+        # Evaluate clustering only if required by the config
+        if self.cfg["DO_EVALUATE_CLUSTERING"]:
+            return None
+        
         # Get relevant data
         cluster_metrics = {}
         cluster_data = self.cluster_info["cluster_data"]
@@ -548,7 +552,7 @@ class ClusterOutput:
         cluster_metrics["n_samples"] = len(cluster_lbls)
         cluster_metrics["n_duplicated_samples"] = len(dupl_lbls["dept"])
         
-        return cluster_metrics  # cluster_info.update({"metrics": cluster_metrics})
+        return cluster_metrics
     
     @staticmethod
     def dunn_index(cluster_data: np.ndarray, cluster_lbls: np.ndarray) -> float:
