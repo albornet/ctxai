@@ -17,8 +17,8 @@ if __name__ == "__main__":
 # {
 #     "ENVIRONMENT": "ctxai_dev",
 #     "DATA_PATH": "Test/1/metadata/intervention/intervention_similar_trials.xlsx",
-#     "USER_ID": "gh30298h6g356fg697g6f2h8f7h398ewhf8",
-#     "PROJECT_ID": "f784h30f7jidj0f8784h0f748idsfjjv8fj",
+#     "USER_ID": "gh30298h6g356",
+#     "PROJECT_ID": "f784h30f7j9if",
 #     "EMBEDDING_MODEL_ID": "pubmed-bert-sentence",
 #     "CLUSTER_DIM_RED_ALGO": "umap",
 #     "CLUSTER_RED_DIM": 10,

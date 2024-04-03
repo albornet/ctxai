@@ -14,7 +14,8 @@ RULE_PATH = "%s/predict" % PATH_PREFIX
 def predict():
     """ Cluster data found in data_dir found in request's field
     """
-    # Validate required fields in JSON payload and send bad request otherwise
+    # Initialization and validation of required fields in JSON payload
+    logger.info("Starting eligibility criteria clustering pipeline")
     request_data = request.get_json(force=True)
     required_keys = [
         "ENVIRONMENT", "DATA_PATH", "USER_ID", "PROJECT_ID", "EMBEDDING_MODEL_ID",
