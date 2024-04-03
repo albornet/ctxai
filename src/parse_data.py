@@ -38,29 +38,20 @@ except:
 def main():
     """ Main script (if not run from a web-service)
     """
-    # Get current configuration and raw data path
-    cfg = config.get_config()
-    raw_data_path = os.path.join(
-        cfg["BASE_DATA_DIR"],
-        cfg["RAW_DATA_SUBDIR"],
-        cfg["RAW_INPUT_FORMAT"],
-    )
-    
-    # Parse criteria (main function not implemented yet)
-    parse_data_fn(raw_data_path=raw_data_path)
+    parse_data_fn()
 
 
-def parse_data_fn(raw_data_path: str) -> None:
+def parse_data_fn() -> None:
     """ Parse all CT files into lists of inclusion and exclusion criteria
     """
     # Get current configuration
     cfg = config.get_config()
     
-    # Ensure reproducibility (needed here?)
+    # Ensure reproducibility (required here?)
     set_seeds(cfg["RANDOM_STATE"])
     
     # Load parsed data from previous run
-    if cfg["LOAD_PREPROCESSED_DATA"]:
+    if cfg["LOAD_PARSED_DATA"]:
         logger.info("Eligibility criteria already parsed, skipping this step")
     
     # Parse data using torchdata pipeline
@@ -68,18 +59,15 @@ def parse_data_fn(raw_data_path: str) -> None:
         logger.info("Parsing criteria from raw clinical trial texts")
         
         # Initialize output file with data headers
-        preprocessed_dir = os.path.join(
-            cfg["BASE_DATA_DIR"], cfg["PREPROCESSED_SUBDIR"], cfg["RAW_INPUT_FORMAT"])
-        os.makedirs(preprocessed_dir, exist_ok=True)
-        csv_path = os.path.join(preprocessed_dir, "parsed_criteria.csv")
+        csv_path = os.path.join(cfg["PREPROCESSED_DIR"], "parsed_criteria.csv")
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(cfg["PREPROCESSED_DATA_HEADERS"])
+            writer.writerow(cfg["PARSED_DATA_HEADERS"])
             
         # Initialize data processors
         too_many_workers = max(os.cpu_count() - 4, os.cpu_count() // 4)
         num_parse_workers = min(cfg["NUM_PARSE_WORKERS"], too_many_workers)
-        ds = get_dataset(raw_data_path, cfg["RAW_INPUT_FORMAT"])
+        ds = get_dataset(cfg["FULL_DATA_PATH"], cfg["ENVIRONMENT"])
         if num_parse_workers == 0:
             rs = InProcessReadingService()
         else:
@@ -97,13 +85,13 @@ def parse_data_fn(raw_data_path: str) -> None:
         logger.info("All criteria have been parsed")
         
     
-def get_dataset(data_path: str, input_format: str) -> dpi.IterDataPipe:
+def get_dataset(data_path: str, environment: str) -> dpi.IterDataPipe:
     """ Create a pipe from file names to processed data, as a sequence of basic
         processing functions, with sharding implemented at the file level
     """
     # Load correct files from a directory
     if os.path.isdir(data_path):
-        masks = "*.%s" % ("json" if input_format == "ctgov" else "xlsx")
+        masks = "*.%s" % ("json" if environment == "ctgov" else "xlsx")
         files = dpi.FileLister(data_path, recursive=True, masks=masks)
         
     # Load correct file from a file path
@@ -115,14 +103,14 @@ def get_dataset(data_path: str, input_format: str) -> dpi.IterDataPipe:
         raise FileNotFoundError(f"{data_path} is neither a file nor a directory")
     
     # Load data inside each file
-    if input_format == "ctgov":
+    if environment == "ctgov":
         jsons = dpi.FileOpener(files, encoding="utf-8")
         dicts = CustomJsonParser(jsons)
         raw_samples = ClinicalTrialFilter(dicts)
-    elif input_format == "ctxai":
+    elif "ctxai" in environment:
         raw_samples = CustomXLSXLineReader(files)
     else:
-        raise ValueError("Wrong input format selected.")
+        raise ValueError("Incorrect ENVIRONMENT field in config.")
         
     # Parse criteria
     sharded_samples = dpi.ShardingFilter(raw_samples)
@@ -141,7 +129,7 @@ class CustomJsonParser(dpi.JsonParser):
                 stream.close()
                 yield file_name, json.loads(data, **self.kwargs)
             except json.decoder.JSONDecodeError:
-                print("Empty json file - skipping to next file.")
+                logger.info("Empty json file - skipping to next file.")
             
 
 if __name__ == "__main__":

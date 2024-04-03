@@ -160,13 +160,14 @@ cython_debug/
 #.idea/
 
 # Custom
-data/*/*/*
-data/postprocessed
-data/preprocessed
-data/mesh_data_2023.xml
-results*/*
+**/data*
+**/results/*
 *api-key*
+utils/mesh_data_2023.xml
+tmp.py
+tmp.png
 temp.py
+temp.png
 archives/*
 .vscode/*
 __pycache__/*

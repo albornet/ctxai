@@ -1,3 +1,4 @@
+import os
 import yaml
 import logging
 import threading
@@ -27,20 +28,93 @@ def update_config(request_data: dict):
                 configuration[key] = value
 
 
-def get_config(default_path: str = "config.yaml"):
+def get_config(default_path: str="config.yaml"):
     """ Get the current in-memory configuration (or default one if non-existent)
     """
     global configuration
     if configuration is None:
         load_default_config(default_path)
-    return configuration
+    return align_config(configuration)
+
+
+def align_config(cfg):
+    """ Make sure eligibility criteria are not filtered when running environment
+        is ctxai, then register and create all required paths and directories
+    """
+    # Helper logging function
+    def log_warning(field, value, culprit_field, culprit_value):
+        logger.warning(
+            "Config field %s was changed to %s because %s is %s" \
+            % (field, value, culprit_field, culprit_value)
+        )
+    
+    # Check in which environment eligibility criteria clustering is run
+    match cfg["ENVIRONMENT"]:
+        case "ctgov":
+            base_dir = "data_ctgov"
+        case "ctxai_dev":
+            base_dir = os.path.join("data_dev", "upload")
+        case "ctxai_prod":
+            base_dir = os.path.join("data_prod", "upload")
+        case _:
+            raise ValueError("Invalid ENVIRONMENT config variable.")
+        
+    # Check filters given data format
+    logger = CTxAILogger("INFO")
+    if "ctxai" in cfg["ENVIRONMENT"]:
+        
+        # Make sure loading from cache is disabled for ctxai environment
+        for field in [
+            "LOAD_PARSED_DATA",
+            "LOAD_EMBEDDINGS",
+            "LOAD_BERTOPIC_RESULTS",
+        ]:
+            if cfg[field] != False:
+                cfg[field] = False
+                log_warning(field, False, "ENVIRONMENT", "ctxai")
+        
+        # Make sure no criteria filtering is applied for ctxai environment, since
+        # ctxai data is already filtered by the upstream user
+        for field in [
+            "CHOSEN_STATUSES",
+            "CHOSEN_CRITERIA",
+            "CHOSEN_PHASES",
+            "CHOSEN_COND_IDS",
+            "CHOSEN_ITRV_IDS",
+        ]:
+            if cfg[field] != []:
+                cfg[field] = []
+                log_warning(field, [], "ENVIRONMENT", "ctxai")
+        
+        # Make sure no criteria filtering is applied for ctxai environment, since
+        # ctxai data is already filtered by the upstream user
+        for field in [
+            "CHOSEN_COND_LVL",
+            "CHOSEN_ITRV_LVL",
+            "STATUS_MAP",
+        ]:
+            if cfg[field] is not None:
+                cfg[field] = None
+                log_warning(field, None, "ENVIRONMENT", "ctxai")
+    
+    # Create and register all required paths and directories
+    output_dir = os.path.join(base_dir, cfg["USER_ID"], cfg["PROJECT_ID"])
+    cfg["FULL_DATA_PATH"] = os.path.join(base_dir, cfg["DATA_PATH"])
+    cfg["PREPROCESSED_DIR"] = os.path.join(output_dir, "preprocessed")
+    cfg["POSTPROCESSED_DIR"] = os.path.join(output_dir, "postprocessed")
+    cfg["RESULT_DIR"] = os.path.join(output_dir, "results")
+    os.makedirs(cfg["PREPROCESSED_DIR"], exist_ok=True)
+    os.makedirs(cfg["POSTPROCESSED_DIR"], exist_ok=True)
+    os.makedirs(cfg["RESULT_DIR"], exist_ok=True)
+    
+    return cfg
 
 
 class CTxAILogger:
-    """ This is copied from BERTopic -> https://maartengr.github.io/BERTopic/index.html
+    """ Copied from BERTopic -> https://maartengr.github.io/BERTopic/index.html
     """
     def __init__(self, level):
-        self.logger = logging.getLogger('CTxAI')
+        self.logger = logging.getLogger("CTxAI")
         self.set_level(level)
         self._add_handler()
         self.logger.propagate = False
@@ -58,7 +132,7 @@ class CTxAILogger:
 
     def _add_handler(self):
         sh = logging.StreamHandler()
-        sh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(message)s'))
+        sh.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(message)s"))
         self.logger.addHandler(sh)
 
         # Remove duplicate handlers

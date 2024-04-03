@@ -75,8 +75,7 @@ class ClinicalTrialFilter(IterDataPipe):
         super().__init__()
         self.dp = dp
         cfg = config.get_config()
-        mesh_cw_path = os.path.join(cfg["BASE_DATA_DIR"], cfg["MESH_CROSSWALK_NAME"])
-        with open(mesh_cw_path, "r") as f:
+        with open(cfg["MESH_CROSSWALK_PATH"], "r") as f:
             self.mesh_cw = json.load(f)
             
     def __iter__(self):
@@ -413,8 +412,7 @@ class CustomXLSXLineReader(IterDataPipe):
             "interventions": "intervention_ids",
         }
         cfg = config.get_config()
-        mesh_cw_path = os.path.join(cfg["BASE_DATA_DIR"], cfg["MESH_CROSSWALK_NAME"])
-        with open(mesh_cw_path, "r") as f:
+        with open(cfg["MESH_CROSSWALK_PATH"], "r") as f:
             self.mesh_cw = json.load(f)
         self.intervention_remove = [
             "Drug: ", "Biological: ", "Radiation: ",
@@ -553,9 +551,7 @@ class EligibilityCriteriaFilter(IterDataPipe):
         self.chosen_itrv_lvl = cfg["CHOSEN_ITRV_LVL"]
         
         # Load crosswalk between mesh terms and conditions / interventions
-        mesh_cw_inverted_path = \
-            os.path.join(cfg["BASE_DATA_DIR"], cfg["MESH_CROSSWALK_INVERTED_NAME"])
-        with open(mesh_cw_inverted_path, "r") as f:
+        with open(cfg["MESH_CROSSWALK_INVERTED_PATH"], "r") as f:
             self.mesh_cw_inverted = json.load(f)
         
         # Initialize data pipeline
@@ -723,28 +719,18 @@ def get_embeddings(embed_model_id: str) -> tuple[np.ndarray, list[str], dict]:
     # Get current configuration
     cfg = config.get_config()
     
-    preprocessed_dir = os.path.join(
-        cfg["BASE_DATA_DIR"],
-        cfg["PREPROCESSED_SUBDIR"],
-        cfg["RAW_INPUT_FORMAT"],
-    )
-    postprocessed_dir = os.path.join(
-        cfg["BASE_DATA_DIR"],
-        cfg["POSTPROCESSED_SUBDIR"],
-        cfg["RAW_INPUT_FORMAT"],
-    )
     if cfg["LOAD_EMBEDDINGS"]:
         embeddings, raw_txts, metadatas = load_embeddings(
-            output_dir=postprocessed_dir,
+            output_dir=cfg["POSTPROCESSED_DIR"],
             embed_model_id=embed_model_id,
         )
     else:
         embeddings, raw_txts, metadatas = generate_embeddings(
-            input_dir=preprocessed_dir,
+            input_dir=cfg["PREPROCESSED_DIR"],
             embed_model_id=embed_model_id,
         )
         save_embeddings(
-            output_dir=postprocessed_dir,
+            output_dir=cfg["POSTPROCESSED_DIR"],
             embed_model_id=embed_model_id,
             embeddings=embeddings,
             raw_txts=raw_txts,
@@ -761,14 +747,22 @@ def generate_embeddings(
         a given model
     """
     # Get current configuration
+    logger.info("Running model to generate embeddings")
     cfg = config.get_config()
     
-    # Load model and data pipeline
-    logger.info("Running model to generate embeddings")
+    # Load model
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    model, tokenizer, pooling_fn = get_model_pipeline(embed_model_id)
+    model, tokenizer, pooling_fn = get_embedding_model_pipeline(embed_model_id)
     model = model.to(device)
-    ds = get_dataset(input_dir, tokenizer)
+    
+    # Load data pipeline (from parsed eligibility criteria to token batches)
+    ds = FileLister(input_dir, recursive=True, masks="*criteria.csv")\
+        .open_files(mode="t", encoding="utf-8")\
+        .parse_csv()\
+        .sharding_filter()\
+        .filter_eligibility_criteria()\
+        .batch(batch_size=cfg["EMBEDDING_BATCH_SIZE"])\
+        .tokenize(tokenizer=tokenizer)
     rs = InProcessReadingService()
     dl = DataLoader2(ds, reading_service=rs)
     
@@ -823,7 +817,7 @@ def load_embeddings(output_dir, embed_model_id):
     return embeddings, raw_txts, metadatas
 
 
-def get_model_pipeline(embed_model_id: str):
+def get_embedding_model_pipeline(embed_model_id: str):
     """ Select a model and the corresponding tokenizer and embed function
     """
     # Get current configuration
@@ -848,26 +842,6 @@ def get_model_pipeline(embed_model_id: str):
     model = AutoModel.from_pretrained(model_str)
     tokenizer = AutoTokenizer.from_pretrained(model_str)
     return model, tokenizer, pooling_fn
-
-
-def get_dataset(data_dir, tokenizer):
-    """ Create a pipe from file names to processed data, as a sequence of basic
-        processing functions, with sharding implemented at the file level
-    """
-    # Get current configuration
-    cfg = config.get_config()
-    
-    ds = FileLister(
-        data_dir, recursive=True, masks=cfg["PREPROCESSED_FILE_MASK"],
-    )\
-        .open_files(mode="t", encoding="utf-8")\
-        .parse_csv()\
-        .sharding_filter()\
-        .filter_eligibility_criteria()\
-        .batch(batch_size=cfg["EMBEDDING_BATCH_SIZE"])\
-        .tokenize(tokenizer=tokenizer)
-        
-    return ds
 
 
 def clean_memory_fn():

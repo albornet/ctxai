@@ -1,7 +1,7 @@
 import logging
 from src import config, parse_data_fn, cluster_data_fn
 from flask import Flask, jsonify, request
-config.load_default_config()  # Make sure this populates a mutable structure
+config.load_default_config()
 logger = logging.getLogger("cluster")
 
 app = Flask(__name__)
@@ -17,8 +17,8 @@ def predict():
     # Validate required fields in JSON payload and send bad request otherwise
     request_data = request.get_json(force=True)
     required_keys = [
-        "RAW_DATA_PATH", "USER_ID", "PROJECT_ID", "EMBEDDING_MODEL_ID",
-    ]
+        "ENVIRONMENT", "DATA_PATH", "USER_ID", "PROJECT_ID", "EMBEDDING_MODEL_ID",
+    ]    
     if not all([k in request_data for k in required_keys]):
         error_dict = {"error": "Missing field in request data"}
         return jsonify(error_dict), 400
@@ -28,15 +28,11 @@ def predict():
     
     # Parse raw data into pre-processed data files
     logger.info("Parsing criterion texts into individual criteria")
-    parse_data_fn(raw_data_path=request_data["RAW_DATA_PATH"])
+    parse_data_fn()
     
     # Cluster pre-processed data
     logger.info("Clustering procedure started")
-    cluster_output = cluster_data_fn(
-        embed_model_id=request_data["EMBEDDING_MODEL_ID"],
-        user_id=request_data["USER_ID"],
-        project_id=request_data["PROJECT_ID"],
-    )
+    cluster_output = cluster_data_fn(request_data["EMBEDDING_MODEL_ID"])
     
     # Return jsonified file paths corresponding to the written data and plot
     logger.info("Clustering procedure finished")

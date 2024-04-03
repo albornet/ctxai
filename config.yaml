@@ -1,22 +1,16 @@
 # General parameters
-USER_ID: null
-PROJECT_ID: null
+ENVIRONMENT: ctxai_dev  # ctgov, ctxai_dev, ctxai_prod
+DATA_PATH: Test/1/metadata/intervention/intervention_similar_trials.xlsx
+USER_ID: ctgov-user
+PROJECT_ID: ctgov-project
 RANDOM_STATE: 1234
-LOAD_PREPROCESSED_DATA: false
+LOAD_PARSED_DATA: false
 LOAD_EMBEDDINGS: false
 LOAD_BERTOPIC_RESULTS: false
 
-# Directories and data format
-BASE_DATA_DIR: data
-RAW_INPUT_FORMAT: ctxai  # ctgov, ctxai
-RAW_DATA_SUBDIR: raw_files  # ONLY USED WHEN RUN AS PYTHON SCRIPT FOR FORMAT = ctgov
-PREPROCESSED_SUBDIR: preprocessed  # <BASE_DATA_DIR>/<PREPROCESSED_SUBDIR>
-POSTPROCESSED_SUBDIR: postprocessed  # <BASE_DATA_DIR>/<POSTPROCESSED_SUBDIR>
-RESULT_DIR: results
-
-# Eligibility criteria pre-processing parameters
+# Eligibility criteria parsing parameters
 NUM_PARSE_WORKERS: 19  # 0 for no multi processing
-PREPROCESSED_DATA_HEADERS:
+PARSED_DATA_HEADERS:
   - criteria paragraph
   - complexity
   - ct path
@@ -29,9 +23,8 @@ PREPROCESSED_DATA_HEADERS:
   - context
   - subcontext
   - individual criterion
-PREPROCESSED_FILE_MASK: "*criteria.csv"
-MESH_CROSSWALK_NAME: mesh_crosswalk.json
-MESH_CROSSWALK_INVERTED_NAME: mesh_crosswalk_inverted.json
+MESH_CROSSWALK_PATH: utils/mesh_crosswalk.json
+MESH_CROSSWALK_INVERTED_PATH: utils/mesh_crosswalk_inverted.json
 
 # Eligibility criteria filtering parameters
 CHOSEN_STATUSES: []  # [completed, terminated]  # [completed, suspended, withdrawn, terminated, unknown status]
@@ -39,8 +32,8 @@ CHOSEN_CRITERIA: []  # [in]
 CHOSEN_PHASES: []  # [Phase 2]
 CHOSEN_COND_IDS: []  # Infections [C01] // Neoplasms [C04] // Cardiovascular Diseases [C14] // Immune System Diseases [C20]
 CHOSEN_ITRV_IDS: []  # [D02]
-CHOSEN_COND_LVL: null  # null to ignore
-CHOSEN_ITRV_LVL: null  # null to ignore
+CHOSEN_COND_LVL: null  # 3  # null to ignore
+CHOSEN_ITRV_LVL: null  # 4  # null to ignore
 STATUS_MAP: null
 
 # Eligibility criteria embedding parameters
@@ -85,6 +78,7 @@ PLOT_RDM_METRIC: null  # null, correlation, euclidean  # NOT USED FOR NOW
 N_ITER_MAX_TSNE: 10000
 CLUSTER_REPRESENTATION_MODEL: null  # null, gpt -> null will just use bertopic's topic keywords
 CLUSTER_REPRESENTATION_TOP_N_WORDS_PER_TOPIC: 5  # BERTopic default = 10
+CLUSTER_REPRESENTATION_PATH_TO_OPEAI_API_KEY: utils/api-key.txt
 CLUSTER_REPRESENTATION_GPT_PROMPT: |
   I have a topic that contains the following documents: 
   [DOCUMENTS]

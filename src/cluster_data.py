@@ -41,63 +41,45 @@ def main():
         logger.info("Done with %s" % embed_model_id)
     
     # Plot final results (comparison of different model embeddings)
-    output_path = os.path.join(
-        cfg["RESULT_DIR"],
-        cfg["RAW_INPUT_FORMAT"],
-        "user-%s" % cfg["USER_ID"],
-        "project-%s" % cfg["PROJECT_ID"],
-        "model-comparison.png",
-    )
+    output_path = os.path.join(cfg["RESULT_DIR"], "model-comparison.png")
     if cfg["DO_EVALUATE_CLUSTERING"]:
         plot_model_comparison(cluster_metrics, output_path)
     logger.info("Model comparison finished!")
 
 
-def cluster_data_fn(
-    embed_model_id: str,
-    user_id: str | None=None,
-    project_id: str | None=None,
-) -> ClusterOutput:
+def cluster_data_fn(embed_model_id: str) -> ClusterOutput:
     """ Cluster eligibility criteria using embeddings from one language model
     """
     # Initialization
     cfg = config.get_config()
     set_seeds(cfg["RANDOM_STATE"])  # try to ensure reproducibility
-    output_base_dir = os.path.join(cfg["RESULT_DIR"], cfg["RAW_INPUT_FORMAT"])
-    bertopic_ckpt_path = os.path.join(
-        cfg["BASE_DATA_DIR"],
-        cfg["POSTPROCESSED_SUBDIR"],
-        cfg["RAW_INPUT_FORMAT"],
-        "bertopic_model",
-    )
+    bertopic_ckpt_path = os.path.join(cfg["POSTPROCESSED_DIR"], "bertopic_model")
     
     # Generate or load elibibility criterion texts, embeddings, and metadatas
-    logger.info("Retrieving elibility criteria embeddings with %s" % embed_model_id)
+    logger.info("Getting elibility criteria embeddings from %s" % embed_model_id)
     embeddings, raw_txts, metadatas = get_embeddings(embed_model_id)
     
     # Generate cluster representation with BERTopic
     if not cfg["LOAD_BERTOPIC_RESULTS"]:
         topic_model = train_bertopic_model(raw_txts, embeddings)
-        if cfg["RAW_INPUT_FORMAT"] == "ctgov":
+        if cfg["ENVIRONMENT"] == "ctgov":
             topic_model.save(bertopic_ckpt_path)
     
     # Load BERTopic cluster representation from previous run (only for ctgov)
     else:
-        if cfg["RAW_INPUT_FORMAT"] != "ctgov":
-            raise ValueError("BERTopic load mode enabled only for raw ctgov data")
-        logger.info("Loading bertopic model trained on eligibility criteria embeddings")
+        logger.info("Loading BERTopic model trained on eligibility criteria embeddings")
         topic_model = BERTopic.load(bertopic_ckpt_path)
     
     # Generate results from the trained model and predictions
     logger.info("Writing clustering results with bertopic titles")
     return ClusterOutput(
-        output_base_dir=output_base_dir,
+        output_base_dir=cfg["RESULT_DIR"],
+        user_id=cfg["USER_ID"],
+        project_id=cfg["PROJECT_ID"],
+        embed_model_id=embed_model_id,
         topic_model=topic_model,
         raw_txts=raw_txts,
         metadatas=metadatas,
-        embed_model_id=embed_model_id,
-        user_id=user_id,
-        project_id=project_id,
     )
 
 
@@ -138,13 +120,14 @@ def get_representation_model():
     
     # Prompt chat-gpt with keywords and document content
     if cfg["CLUSTER_REPRESENTATION_MODEL"] == "gpt":
-        api_path = os.path.join("data", "api-key.txt")
+        api_path = os.path.join(cfg["CLUSTER_REPRESENTATION_PATH_TO_OPENAI_API_KEY"])
         try:
             with open(api_path, "r") as f: api_key = f.read()
         except:
             raise FileNotFoundError(" ".join([
                 "To use CLUSTER_REPRESENTATION_MODEL = gpt,",
-                "you must have an api-key at %s" % api_path,
+                "you must have an api-key file at the path defined in the",
+                "config under CLUSTER_REPRESENTATION_PATH_TO_OPENAI_API_KEY",
             ]))
         return OpenAI(
                 client=OpenAIClient(api_key=api_key),

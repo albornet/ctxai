@@ -1,3 +1,0 @@
-All 455,101 studies in API JSON format
-  Studies grouped by leading part of NCT Id
-  Studies published on June 8, 2023

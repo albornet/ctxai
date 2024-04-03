@@ -3,6 +3,12 @@ import json
 import xml.etree.ElementTree as ET
 
 
+# To run this script, you'll need to have the file utils/mesh_data_2023.xml
+# (available at the following adress: https://nlmpubs.nlm.nih.gov/projects/mesh/)
+# in the same folder as the script. Running this script produces the files
+# mesh_crosswalk.json and mesh_crosswalk_inverted.json
+
+
 def main():
     in_file_path = os.path.join('data', 'mesh_data_2023.xml')
     out_file_path = os.path.join('data', 'mesh_crosswalk.json')
