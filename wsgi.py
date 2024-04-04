@@ -25,7 +25,7 @@ if __name__ == "__main__":
 #     "CLUSTER_RED_DIM": 10,
 #     "PLOT_DIM_RED_ALGO": "tsne",
 #     "PLOT_RED_DIM": 2,
-#     "CLUSTER_REPRESENTATION_PATH_TO_OPEAI_API_KEY": "utils/api-key.txt",
+#     "CLUSTER_REPRESENTATION_PATH_TO_OPENAI_API_KEY": "utils/api-key.txt",
 #     "CLUSTER_REPRESENTATION_MODEL": null,
 #     "CLUSTER_REPRESENTATION_GPT_PROMPT": "I have a topic that contains the following documents: \n[DOCUMENTS]\nThe topic is described by the following keywords: \n[KEYWORDS]\nBased on the information above, extract a short but highly descriptive topic label of at most 5 words.\nMake sure it is in the following format: <topic type>: <topic label>, where <topic type> is either 'Inclusion criterion: ' or 'Exclustion criterion: '\n"
 # }

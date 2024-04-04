@@ -708,7 +708,7 @@ class ClusterOutput:
                     showlegend=False,
                 )
             ms_factor = 1.0
-            if not is_3d: ms_factor *= 0.1
+            if not is_3d: ms_factor *= 0.3
             if not do_top_k: ms_factor *= 0.3                
             for trace in fig.data:
                 if 'size' in trace.marker:
