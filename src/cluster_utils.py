@@ -334,7 +334,7 @@ class ClusterOutput:
         self.cluster_info = self.get_cluster_info(topic_model)
         logger.info("Generating cluster titles from representation model")
         self.cluster_titles = self.get_cluster_titles(topic_model)
-        logger.info("Generating with dimensionality reduction cluster data")
+        logger.info("Reducing cluster data dimensionality for plotting")
         self.plot_data = self.get_plot_data()
         if self.cfg["DO_EVALUATE_CLUSTERING"]:
             logger.info("Evaluating cluster quality")
