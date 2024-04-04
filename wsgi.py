@@ -19,6 +19,7 @@ if __name__ == "__main__":
 #     "DATA_PATH": "Test/1/metadata/intervention/intervention_similar_trials.xlsx",
 #     "USER_ID": "gh30298h6g356",
 #     "PROJECT_ID": "f784h30f7j9if",
+#     "USER_FILTERING": "intervention",
 #     "EMBEDDING_MODEL_ID": "pubmed-bert-sentence",
 #     "CLUSTER_DIM_RED_ALGO": "umap",
 #     "CLUSTER_RED_DIM": 10,

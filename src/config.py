@@ -97,14 +97,16 @@ def align_config(cfg):
                 cfg[field] = None
                 log_warning(field, None, "ENVIRONMENT", "ctxai")
     
-    # Create and register all required paths and directories
+    # Generate a common directory for all outputs of the pipeline
     output_dir = os.path.join(base_dir, cfg["USER_ID"], cfg["PROJECT_ID"])
+    if cfg["USER_FILTERING"] is not None:
+        output_dir = os.path.join(output_dir, cfg["USER_FILTERING"])
+    
+    # Create and register all required paths and directories
     cfg["FULL_DATA_PATH"] = os.path.join(base_dir, cfg["DATA_PATH"])
-    cfg["PREPROCESSED_DIR"] = os.path.join(output_dir, "preprocessed")
-    cfg["POSTPROCESSED_DIR"] = os.path.join(output_dir, "postprocessed")
+    cfg["PROCESSED_DIR"] = os.path.join(output_dir, "processed")
     cfg["RESULT_DIR"] = os.path.join(output_dir, "results")
-    os.makedirs(cfg["PREPROCESSED_DIR"], exist_ok=True)
-    os.makedirs(cfg["POSTPROCESSED_DIR"], exist_ok=True)
+    os.makedirs(cfg["PROCESSED_DIR"], exist_ok=True)
     os.makedirs(cfg["RESULT_DIR"], exist_ok=True)
     
     return cfg

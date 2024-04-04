@@ -53,11 +53,14 @@ def cluster_data_fn(embed_model_id: str) -> ClusterOutput:
     # Initialization
     cfg = config.get_config()
     set_seeds(cfg["RANDOM_STATE"])  # try to ensure reproducibility
-    bertopic_ckpt_path = os.path.join(cfg["POSTPROCESSED_DIR"], "bertopic_model")
+    bertopic_ckpt_path = os.path.join(cfg["PROCESSED_DIR"], "bertopic_model")
     
     # Generate or load elibibility criterion texts, embeddings, and metadatas
     logger.info("Getting elibility criteria embeddings from %s" % embed_model_id)
-    embeddings, raw_txts, metadatas = get_embeddings(embed_model_id)
+    embeddings, raw_txts, metadatas = get_embeddings(
+        embed_model_id=embed_model_id,
+        processed_dir=cfg["PROCESSED_DIR"],
+    )
     
     # Generate cluster representation with BERTopic
     if not cfg["LOAD_BERTOPIC_RESULTS"]:
@@ -73,6 +76,7 @@ def cluster_data_fn(embed_model_id: str) -> ClusterOutput:
     # Generate results from the trained model and predictions
     logger.info("Writing clustering results with bertopic titles")
     return ClusterOutput(
+        input_data_path=cfg["FULL_DATA_PATH"],
         output_base_dir=cfg["RESULT_DIR"],
         user_id=cfg["USER_ID"],
         project_id=cfg["PROJECT_ID"],

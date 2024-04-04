@@ -14,8 +14,6 @@ import pickle
 import numpy as np
 import pandas as pd
 import torch
-import gc
-import cupy as cp
 from tqdm import tqdm
 
 # Data pipelines
@@ -713,7 +711,10 @@ class Tokenizer(IterDataPipe):
         )
 
 
-def get_embeddings(embed_model_id: str) -> tuple[np.ndarray, list[str], dict]:
+def get_embeddings(
+    embed_model_id: str,
+    processed_dir: str,
+) -> tuple[np.ndarray, list[str], dict]:
     """ Generate and save embeddings or load them from a previous run
     """
     # Get current configuration
@@ -721,21 +722,22 @@ def get_embeddings(embed_model_id: str) -> tuple[np.ndarray, list[str], dict]:
     
     if cfg["LOAD_EMBEDDINGS"]:
         embeddings, raw_txts, metadatas = load_embeddings(
-            output_dir=cfg["POSTPROCESSED_DIR"],
+            output_dir=processed_dir,
             embed_model_id=embed_model_id,
         )
     else:
         embeddings, raw_txts, metadatas = generate_embeddings(
-            input_dir=cfg["PREPROCESSED_DIR"],
+            input_dir=processed_dir,
             embed_model_id=embed_model_id,
         )
         save_embeddings(
-            output_dir=cfg["POSTPROCESSED_DIR"],
+            output_dir=processed_dir,
             embed_model_id=embed_model_id,
             embeddings=embeddings,
             raw_txts=raw_txts,
             metadatas=metadatas,
         )
+        
     return embeddings.numpy(), raw_txts, metadatas
 
 
@@ -842,26 +844,3 @@ def get_embedding_model_pipeline(embed_model_id: str):
     model = AutoModel.from_pretrained(model_str)
     tokenizer = AutoTokenizer.from_pretrained(model_str)
     return model, tokenizer, pooling_fn
-
-
-def clean_memory_fn():
-    """ Try to remove unused variables in GPU and CPU, after each model run
-    """
-    gc.collect()
-    mempool = cp.get_default_memory_pool()
-    pinned_mempool = cp.get_default_pinned_memory_pool()
-    mempool.free_all_blocks()
-    pinned_mempool.free_all_blocks()
-
-
-def clean_memory():
-    """ Decorator to clean memory before and after a function call
-    """
-    def decorator(original_function):
-        def wrapper(*args, **kwargs):
-            clean_memory_fn()
-            result = original_function(*args, **kwargs)
-            clean_memory_fn()
-            return result
-        return wrapper
-    return decorator

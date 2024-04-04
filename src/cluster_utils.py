@@ -282,6 +282,7 @@ class ClusterInstance:
 
 @dataclass
 class ClusterOutput:
+    input_data_path: str
     output_dir: str
     user_id: str | None
     project_id: str | None
@@ -294,6 +295,7 @@ class ClusterOutput:
     
     def __init__(
         self,
+        input_data_path: str,
         output_base_dir: str,
         user_id: str | None,
         project_id: str | None,
@@ -309,6 +311,7 @@ class ClusterOutput:
         self.cfg = config.get_config()
         
         # Identify where results come from are where they are stored
+        self.input_data_path = input_data_path
         self.embed_model_id = embed_model_id
         self.user_id = user_id
         self.project_id = project_id

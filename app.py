@@ -18,8 +18,13 @@ def predict():
     logger.info("Starting eligibility criteria clustering pipeline")
     request_data = request.get_json(force=True)
     required_keys = [
-        "ENVIRONMENT", "DATA_PATH", "USER_ID", "PROJECT_ID", "EMBEDDING_MODEL_ID",
-    ]    
+        "ENVIRONMENT",
+        "DATA_PATH",
+        "USER_ID",
+        "PROJECT_ID",
+        "USER_FILTERING",
+        "EMBEDDING_MODEL_ID",
+    ]
     if not all([k in request_data for k in required_keys]):
         error_dict = {"error": "Missing field in request data"}
         return jsonify(error_dict), 400

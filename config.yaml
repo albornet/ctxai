@@ -3,6 +3,7 @@ ENVIRONMENT: ctxai_dev  # ctgov, ctxai_dev, ctxai_prod
 DATA_PATH: Test/1/metadata/intervention/intervention_similar_trials.xlsx
 USER_ID: ctgov-user-id-example
 PROJECT_ID: ctgov-project-id-example
+USER_FILTERING: null  # null, intervention, condition, intersection
 RANDOM_STATE: 1234
 LOAD_PARSED_DATA: false
 LOAD_EMBEDDINGS: false

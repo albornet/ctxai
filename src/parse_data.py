@@ -59,7 +59,7 @@ def parse_data_fn() -> None:
         logger.info("Parsing criteria from raw clinical trial texts")
         
         # Initialize output file with data headers
-        csv_path = os.path.join(cfg["PREPROCESSED_DIR"], "parsed_criteria.csv")
+        csv_path = os.path.join(cfg["PROCESSED_DIR"], "parsed_criteria.csv")
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(cfg["PARSED_DATA_HEADERS"])
