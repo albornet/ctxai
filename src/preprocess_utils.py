@@ -419,7 +419,7 @@ class CustomXLSXLineReader(IterDataPipe):
     
     def __iter__(self):
         for file_name in self.dp:
-            sheet_df = pd.ExcelFile(file_name).parse("metadata")
+            sheet_df = pd.ExcelFile(file_name).parse("metadata").fillna("")
             crit_str_list = self.extract_criteria_strs(sheet_df)
             metatdata_dict_list = self.extract_metadata_dicts(sheet_df)
             for crit_str, metadata in zip(crit_str_list, metatdata_dict_list):
@@ -429,8 +429,8 @@ class CustomXLSXLineReader(IterDataPipe):
     def extract_criteria_strs(sheet_df: pd.DataFrame) -> list[str]:
         """ Extract criteria text from the dataframe
         """
-        in_crit_strs = sheet_df["inclusionCriteriaNorm"].fillna("")
-        ex_crit_strs = sheet_df["exclusionCriteriaNorm"].fillna("")
+        in_crit_strs = sheet_df["inclusionCriteriaNorm"]  # .fillna("")
+        ex_crit_strs = sheet_df["exclusionCriteriaNorm"]  # .fillna("")
         crit_strs = in_crit_strs + "\n\n" + ex_crit_strs
         return crit_strs
     
@@ -713,6 +713,7 @@ class Tokenizer(IterDataPipe):
 
 def get_embeddings(
     embed_model_id: str,
+    preprocessed_dir: str,
     processed_dir: str,
 ) -> tuple[np.ndarray, list[str], dict]:
     """ Generate and save embeddings or load them from a previous run
@@ -727,7 +728,7 @@ def get_embeddings(
         )
     else:
         embeddings, raw_txts, metadatas = generate_embeddings(
-            input_dir=processed_dir,
+            input_dir=preprocessed_dir,
             embed_model_id=embed_model_id,
         )
         save_embeddings(
@@ -758,7 +759,7 @@ def generate_embeddings(
     model = model.to(device)
     
     # Load data pipeline (from parsed eligibility criteria to token batches)
-    ds = FileLister(input_dir, recursive=True, masks="*criteria.csv")\
+    ds = FileLister(input_dir, recursive=True, masks="parsed_criteria.csv")\
         .open_files(mode="t", encoding="utf-8")\
         .parse_csv()\
         .sharding_filter()\
@@ -772,7 +773,7 @@ def generate_embeddings(
     raw_txts, metadatas = [], []
     embeddings = torch.empty((0, model.config.hidden_size))
     for encoded, raw_txt, metadata in tqdm(
-        iterable=dl, leave=False, desc="Embedding eligibility criteria"
+        iterable=dl, desc="Embedding eligibility criteria"
     ):
         
         # Compute embeddings for this batch

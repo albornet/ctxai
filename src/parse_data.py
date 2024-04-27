@@ -59,7 +59,7 @@ def parse_data_fn() -> None:
         logger.info("Parsing criteria from raw clinical trial texts")
         
         # Initialize output file with data headers
-        csv_path = os.path.join(cfg["PROCESSED_DIR"], "parsed_criteria.csv")
+        csv_path = os.path.join(cfg["PREPROCESSED_DIR"], "parsed_criteria.csv")
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(cfg["PARSED_DATA_HEADERS"])
@@ -75,7 +75,7 @@ def parse_data_fn() -> None:
         dl = DataLoader2(ds, reading_service=rs)
         
         # Write parsed criteria to the output file
-        for data in tqdm(dl, desc="Clinical trials processed so far", leave=False):
+        for data in tqdm(dl, desc="Clinical trials processed so far"):
             with open(csv_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerows(data)

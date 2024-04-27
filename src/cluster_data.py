@@ -43,7 +43,8 @@ def main():
     # Plot final results (comparison of different model embeddings)
     output_path = os.path.join(cfg["RESULT_DIR"], "model-comparison.png")
     if cfg["DO_EVALUATE_CLUSTERING"]:
-        plot_model_comparison(cluster_metrics, output_path)
+        fig_title = "Label-dependent metrics %s" % cfg["CHOSEN_COND_IDS"]
+        plot_model_comparison(cluster_metrics, output_path, fig_title)
     logger.info("Model comparison finished!")
 
 
@@ -59,6 +60,7 @@ def cluster_data_fn(embed_model_id: str) -> ClusterOutput:
     logger.info("Getting elibility criteria embeddings from %s" % embed_model_id)
     embeddings, raw_txts, metadatas = get_embeddings(
         embed_model_id=embed_model_id,
+        preprocessed_dir=cfg["PREPROCESSED_DIR"],
         processed_dir=cfg["PROCESSED_DIR"],
     )
     
@@ -110,7 +112,7 @@ def train_bertopic_model(
     )
     
     # Train BERTopic model using raw text documents and pre-computed embeddings
-    logger.info("Running bertopic algorithm on eligibility criteria embeddings")
+    logger.info(f"Running bertopic algorithm on {len(raw_txts)} embeddings")
     topic_model = topic_model.fit(raw_txts, embeddings)
     # topics = topic_model.reduce_outliers(raw_txts, topics)
     return topic_model
@@ -149,28 +151,29 @@ def get_representation_model():
         return None
     
      
-def plot_model_comparison(metrics: dict, output_path: str):
+def plot_model_comparison(metrics: dict, output_path: str, fig_title: str):
     """ Generate a comparison plot between models, based on how model embeddings
         produce good clusters
     """
     # Load, parse, and normalize data
     to_plot = [
-        "Silhouette score", "DB index", "Dunn index", "MI score",
+        "Silhouette score", "DB index", "Dunn index",  # "MI score",
         "AMI score", "Homogeneity", "Completeness", "V measure",
     ]
-    def norm_fn(d: dict[str, dict]) -> dict:
-        d_free, d_dept = d["label_free"], d["label_dept"],
-        d_ceil, d_rand = d["label_ceil"], d["label_rand"]
+    def norm_fn(d: dict[str, dict], dept_key: str) -> dict:
+        d_free, d_dept = d["label_free"], d["label_%s" % dept_key]
         d_free = {k: v for k, v in d_free.items() if k in to_plot}
-        d_dept = {
-            # k: (d_dept[k] - d_rand[k]) / (d_ceil[k] - d_rand[k])  # normalized! 0 = d_rand, 1 = d_ceil
-            # k: d_dept[k] / d_ceil[k]
-            k: d_dept[k]
-            for k in d_dept.keys() if k in to_plot
-        }
-        d_free.update(d_dept)
-        return d_free
-    metrics = {k: norm_fn(v) for k, v in metrics.items()}
+        d_dept = {k: d_dept[k] for k in d_dept.keys() if k in to_plot}
+        return d_dept
+        # d_free.update(d_dept)
+        # return d_free
+    
+    # Grosse arrache
+    metrics = {
+        "model": norm_fn(list(metrics.values())[0], "dept"),
+        "ceiling": norm_fn(list(metrics.values())[0], "ceil"),
+        "random": norm_fn(list(metrics.values())[0], "rand"),
+    }
     
     # Retrieve metric labels and model names
     labels = list(next(iter(metrics.values())).keys())
@@ -199,11 +202,12 @@ def plot_model_comparison(metrics: dict, output_path: str):
             )
             
     # Adjustments to the plot
-    ax.set_title("Comparison of models for each metric", fontsize="x-large")
+    ax.set_title(fig_title, fontsize="x-large")
+    ax.set_ylim(0.0, 1.0)
     ax.set_xticks([i + width * (num_models - 1) / 2 for i in range(len(labels))])
     ax.set_xticklabels(labels, fontsize="large", rotation=22.5)
     ax.set_ylabel("Scores", fontsize="x-large")
-    ax.legend(fontsize="large", loc="upper right", ncol=4)
+    ax.legend(fontsize="large", loc="upper right", ncol=1)
     ax.plot([-0.1, len(metrics) - 0.1], [0, 0], color="k")
     
     # Save final figure

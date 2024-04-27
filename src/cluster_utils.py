@@ -542,8 +542,9 @@ class ClusterOutput:
             
             # Load prediction labels of the correct type
             if pred_type == "rand":
-                pred_lbls = true_lbls.copy()
-                np.random.shuffle(pred_lbls)
+                # pred_lbls = true_lbls.copy()
+                # np.random.shuffle(pred_lbls)
+                pred_lbls = np.random.randint(0, max(true_lbls + 1), size=len(true_lbls))
             else:
                 encoder = LabelEncoder()
                 pred_lbls = encoder.fit_transform(dupl_lbls[pred_type]).astype(np.int32)

@@ -7,7 +7,7 @@ configuration = None  # global configuration dictionary
 config_lock = threading.Lock()  # lock for thread-safe configuration updates
 
 
-def load_default_config(default_path: str = "config.yaml"):
+def load_default_config(default_path: str="config.yaml"):
     """ Load default configuration file to memory
     """
     global configuration
@@ -109,6 +109,12 @@ def align_config(cfg):
     os.makedirs(cfg["PROCESSED_DIR"], exist_ok=True)
     os.makedirs(cfg["RESULT_DIR"], exist_ok=True)
     
+    # Special case for ctgov environment, where pre-processed data is re-used
+    if cfg["ENVIRONMENT"] == "ctgov":
+        cfg["PREPROCESSED_DIR"] = cfg["FULL_DATA_PATH"]
+    else:
+        cfg["PREPROCESSED_DIR"] = cfg["PROCESSED_DIR"]
+        
     return cfg
 
 
