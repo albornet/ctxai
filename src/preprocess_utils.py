@@ -677,16 +677,16 @@ class EligibilityCriteriaFilter(IterDataPipe):
     def _build_input_text(self, sample):
         """ Retrieve criterion and contextual information
         """
-        term_sequence = (
-            sample[self.col_id["category"]] + "clusion criterion",
-            # sample[self.col_id["context"]],
-            # sample[self.col_id["subcontext"]],
-            sample[self.col_id["individual criterion"]],
-        )
-        to_join = (s for s in term_sequence if len(s) > 0)
-        return " - ".join(to_join).lower()
-
-
+        criterion_str = sample[self.col_id["individual criterion"]]
+        category = sample[self.col_id["category"]]
+        
+        if category != "?":
+            category_str = category + "clusion criterion"
+            criterion_str = " - ".join((category_str, criterion_str))
+            
+        return criterion_str.lower()
+    
+        
 @functional_datapipe("tokenize")
 class Tokenizer(IterDataPipe):
     def __init__(self, dp: IterDataPipe, tokenizer):

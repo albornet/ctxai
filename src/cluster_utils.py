@@ -542,8 +542,6 @@ class ClusterOutput:
             
             # Load prediction labels of the correct type
             if pred_type == "rand":
-                # pred_lbls = true_lbls.copy()
-                # np.random.shuffle(pred_lbls)
                 pred_lbls = np.random.randint(0, max(true_lbls + 1), size=len(true_lbls))
             else:
                 encoder = LabelEncoder()
@@ -852,7 +850,7 @@ def get_dim_red_model(algorithm: str, dim: int, n_samples: int):
             n_neighbors=90,  # same as for t-SNE (see below) - UMAP default = 15
             learning_rate=200.0,  # same as for t-SNE (see below) - UMAP default = 1.0
             min_dist=0.0,  # same as for t-SNE (see below) - UMAP default = 0.1
-            metric="cosine",  # same as for t-SNE (see below) - UMAP default = "euclidean"
+            metric="correlation",  # same as for t-SNE (see below) - UMAP default = "euclidean"
         )
     
     # Principal component analysis
@@ -870,14 +868,14 @@ def get_dim_red_model(algorithm: str, dim: int, n_samples: int):
             "method": "barnes_hut" if dim < 4 else "exact",  # "fft" or "barnes_hut"?
             "n_iter": cfg["N_ITER_MAX_TSNE"],
             "n_iter_without_progress": 1000,
-            "metric": "cosine",
+            "metric": "correlation",
             "learning_rate": 200.0,
+            "perplexity": 50.0,  # CannyLabs CUDA-TSNE default is 50
         }
         if n_samples < 36_000 and dim == 2:
             n_neighbors = min(int(n_samples / 400 + 1), 90)
             small_cuml_specific_params = {
                 "n_neighbors": n_neighbors,  # CannyLabs CUDA-TSNE default is 32
-                "perplexity": 50.0,  # CannyLabs CUDA-TSNE default is 50
                 "learning_rate_method": "none",  # not in sklearn and produces bad results
             }
             params.update(small_cuml_specific_params)

@@ -111,7 +111,7 @@ def align_config(cfg):
     
     # Special case for ctgov environment, where pre-processed data is re-used
     if cfg["ENVIRONMENT"] == "ctgov":
-        cfg["PREPROCESSED_DIR"] = cfg["FULL_DATA_PATH"]
+        cfg["PREPROCESSED_DIR"] = base_dir  # cfg["FULL_DATA_PATH"]
     else:
         cfg["PREPROCESSED_DIR"] = cfg["PROCESSED_DIR"]
         
