@@ -1,13 +1,23 @@
 # General parameters
-ENVIRONMENT: ctxai_dev  # ctgov, ctxai_dev, ctxai_prod
-DATA_PATH: Test/1/metadata/intervention/intervention_similar_trials.xlsx
-USER_ID: ctgov-user-id-example
-PROJECT_ID: ctgov-project-id-example
+ENVIRONMENT: ctgov  # ctgov, ctxai_dev, ctxai_prod
+DATA_PATH: raw_files  # Test/2/metadata/intervention/intervention_similar_trials_full.xlsx
+SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY: True
+USER_ID: example_user_id  # any string (overwritten if SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY == True and ENVIRONMENT == ctgov)
+PROJECT_ID: example_project_id  # any string (overwritten if SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY == True and ENVIRONMENT == ctgov)
 USER_FILTERING: null  # null, intervention, condition, intersection
-RANDOM_STATE: 1234
-LOAD_PARSED_DATA: false
-LOAD_EMBEDDINGS: false
+OPTUNA_SAMPLER: tpe  # tpe (presumably better), random (seed presumably more stable)
+RANDOM_STATE: 0123
+LOAD_PARSED_DATA: true
+LOAD_EMBEDDINGS: false  # set to false if you change CHOSEN_COND/ITRV_LVL/IDS
 LOAD_BERTOPIC_RESULTS: false
+
+# Prediction  parameters
+PREDICTOR_TARGET_TYPE: status  # debug, phase, status, condition, intervention_type, intervention_name, primary_outcome, is_fda_regulated_drug, enrollment_count,  enrollment_type, enrollment_rate
+PREDICTOR_TASK_TYPE: classification  # classification, regression, must correspond to PREDICTOR_TARGET_TYPE (error not caught for now)
+PREDICTOR_MODEL_TYPE: sv  # ridge, lasso, elasticnet, sv, decisiontree, randomforest, gradientboosting, knn, naivebayes
+PREDICTOR_INPUT_TYPE: raw_completes  # random, cluster_ids, raw_embeddings, reduced_embeddings, raw_medoids, reduced_medoids, raw_completes, reduced_completes
+BALANCE_PREDICTION_DATA: false
+N_PREDICTION_OPTUNA_TRIALS: 25
 
 # Eligibility criteria parsing parameters
 NUM_PARSE_WORKERS: 19  # 0 for no multi processing
@@ -28,29 +38,28 @@ MESH_CROSSWALK_PATH: utils/mesh_crosswalk.json
 MESH_CROSSWALK_INVERTED_PATH: utils/mesh_crosswalk_inverted.json
 
 # Eligibility criteria filtering parameters
-CHOSEN_STATUSES: []  # [completed, terminated]  # [completed, suspended, withdrawn, terminated, unknown status]
+CHOSEN_STATUSES: [completed, terminated]  # [completed, suspended, withdrawn, terminated, unknown status]
 CHOSEN_CRITERIA: []  # [in]
 CHOSEN_PHASES: []  # [Phase 2]
 CHOSEN_COND_IDS: []  # Infections [C01] // Neoplasms [C04] // Cardiovascular Diseases [C14] // Immune System Diseases [C20]
 CHOSEN_ITRV_IDS: []  # [D02]
-CHOSEN_COND_LVL: null  # 3  # null to ignore
-CHOSEN_ITRV_LVL: null  # 4  # null to ignore
+CHOSEN_COND_LVL: 2  # null to ignore
+CHOSEN_ITRV_LVL: 1  # null to ignore
 STATUS_MAP: null
 
 # Eligibility criteria embedding parameters
-MAX_ELIGIBILITY_CRITERIA_SAMPLES: 100_000  # to avoid dumping core
+MAX_ELIGIBILITY_CRITERIA_SAMPLES: 2_000_000  # ct-gov has maximum 1740170 criteria (maximum, if no filter is applied)
 EMBEDDING_BATCH_SIZE: 64
 EMBEDDING_MODEL_ID_MAP:
   pubmed-bert-sentence: pritamdeka/S-PubMedBert-MS-MARCO
   # transformer-sentence: sentence-transformers/all-mpnet-base-v2
-  # bert-sentence: efederici/sentence-bert-base
-  # pubmed-bert-token: microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext
+  bert-sentence: efederici/sentence-bert-base
+  pubmed-bert-token: microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext
   # bioct-bert-token: domenicrosati/ClinicalTrialBioBert-NLI4CT
   # roberta: roberta-large
-  # bert: bert-large-uncased
+  bert: bert-large-uncased
 
 # Clustering hyper-optimization parameters
-OPTUNA_SAMPLER: tpe  # tpe (better), random (seed presumably more stable)
 N_OPTUNA_TRIALS: 100
 N_CLUSTER_MAX: 500  # used to avoid extreme hyper-parameter combinations
 OPTUNA_PARAM_RANGES:
@@ -66,10 +75,10 @@ OPTUNA_PARAM_RANGES:
   alpha_secondary: [0.1, 10.0]
 
 # Cluster generation parameters
-DO_EVALUATE_CLUSTERING: false  # if true, will generate metrics for the clustering
+DO_EVALUATE_CLUSTERING: true  # if true, will generate metrics for the clustering
 DO_SUBCLUSTERIZE: true  # if true, try to cluster further each computed cluster
-CLUSTER_DIM_RED_ALGO: umap  # pca, umap, tsne, null (umap advised here)
-CLUSTER_RED_DIM: 10  # becomes full-dim if CLUSTER_DIM_RED_ALGO == null
+CLUSTER_DIM_RED_ALGO: tsne  # pca, umap, tsne, null (umap advised here)
+CLUSTER_RED_DIM: 2  # becomes full-dim if CLUSTER_DIM_RED_ALGO == null
 CLUSTER_RDM_METRIC: null  # null, correlation, euclidean  # NOT USED FOR NOW
 
 # Cluster representation parameters
@@ -79,7 +88,7 @@ PLOT_RDM_METRIC: null  # null, correlation, euclidean  # NOT USED FOR NOW
 N_ITER_MAX_TSNE: 10000
 CLUSTER_REPRESENTATION_MODEL: null  # null, gpt -> null will just use bertopic's topic keywords
 CLUSTER_REPRESENTATION_TOP_N_WORDS_PER_TOPIC: 5  # BERTopic default = 10
-CLUSTER_REPRESENTATION_PATH_TO_OPEAI_API_KEY: utils/api-key.txt
+CLUSTER_REPRESENTATION_PATH_TO_OPENAI_API_KEY: utils/api-key.txt
 CLUSTER_REPRESENTATION_GPT_PROMPT: |
   I have a topic that contains the following documents: 
   [DOCUMENTS]

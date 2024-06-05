@@ -14,6 +14,7 @@ import random
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import matplotlib.pyplot as plt
 from itertools import product
 from collections import defaultdict
 from dataclasses import dataclass, asdict
@@ -116,8 +117,6 @@ class ClusterGeneration:
             cluster_lbls = cluster_info["cluster_ids"]
             metric = 0.0
             metric += 1.0 * silhouette_score(data, cluster_lbls, chunksize=20_000)
-            # metric += 1.0 * ClusterOutput.dunn_index(data, cluster_lbls)
-            # metric += 1.0 * (1.0 - davies_bouldin_score(data, cluster_lbls))
             no_lbl_rate = np.count_nonzero(cluster_lbls == -1) / len(cluster_lbls)
             metric += 1.0 * (1.0 - no_lbl_rate)
             return metric
@@ -239,6 +238,7 @@ class ClusterGeneration:
 @dataclass
 class EligibilityCriterionData:
     ct_id: str
+    member_id: int
     raw_text: str
     reduced_embedding: list[float]  # length = 2 (or plot_dim)
 
@@ -256,6 +256,7 @@ class ClusterInstance:
         self,
         cluster_id: int,
         ct_ids: list[str],
+        member_ids: list[int],
         title: str,
         prevalence: float,
         medoid: np.ndarray,
@@ -272,11 +273,12 @@ class ClusterInstance:
         self.ec_list = [
             EligibilityCriterionData(
                 ct_id=ct_id,
+                member_id=member_id,
                 raw_text=raw_text,
                 reduced_embedding=plot_embedding,
             )
-            for ct_id, raw_text, plot_embedding,
-            in zip(ct_ids, raw_txts, plot_data.tolist())
+            for ct_id, member_id, raw_text, plot_embedding,
+            in zip(ct_ids, member_ids, raw_txts, plot_data.tolist())
         ]
         
 
@@ -315,16 +317,13 @@ class ClusterOutput:
         self.embed_model_id = embed_model_id
         self.user_id = user_id
         self.project_id = project_id
-        self.output_dir = os.path.join(
-            output_base_dir,
-            "cluster_results_with_%s" % embed_model_id,
-        )
+        self.output_dir = os.path.join(output_base_dir, embed_model_id)
         os.makedirs(self.output_dir, exist_ok=True)
         
         # Raw data and labels for each eligibility criterion
         self.raw_txts = raw_txts
         self.n_samples = len(raw_txts)
-        self.ct_ids = [m["path"][0] for m in metadatas]
+        self.ct_paths = [m["path"][0] for m in metadatas]
         self.phases = [l["phase"] for l in metadatas]
         self.conds = [l["condition"] for l in metadatas]
         self.itrvs = [l["intervention"] for l in metadatas]
@@ -403,7 +402,8 @@ class ClusterOutput:
             cluster_instances.append(
                 ClusterInstance(
                     cluster_id=cluster_id,
-                    ct_ids=[self.ct_ids[i] for i in member_ids],
+                    ct_ids=[self.ct_paths[i] for i in member_ids],
+                    member_ids=member_ids,
                     title=self.cluster_titles[cluster_id],
                     prevalence=self.statistics["prevalences"][cluster_id],
                     medoid=self.statistics["medoids"][cluster_id].tolist(),
@@ -447,10 +447,10 @@ class ClusterOutput:
         """
         # Match clinical trial ids to cluster ids for all criteria
         cluster_ids = self.cluster_info["cluster_ids"].tolist()
-        zipped_paths = list(zip(self.ct_ids, cluster_ids))
+        zipped_paths = list(zip(self.ct_paths, cluster_ids))
         
         # Compute absolute cluster prevalence by counting clinical trials
-        n_cts = len(set(self.ct_ids))
+        n_cts = len(set(self.ct_paths))
         cluster_sample_paths = {
             cluster_id: [p for p, l in zipped_paths if l == cluster_id]
             for cluster_id in range(-1, self.cluster_info["n_clusters"])
@@ -507,7 +507,7 @@ class ClusterOutput:
     def evaluate_clustering(self):
         """ Run final evaluation of clusters, based on phase(s), condition(s), and
             interventions(s). Duplicate each samples for any combination.    
-        """        
+        """
         # Get relevant data
         cluster_metrics = {}
         cluster_data = self.cluster_info["cluster_data"]
@@ -526,12 +526,17 @@ class ClusterOutput:
         dupl_lbls = {"dept": [], "true": [], "ceil": []}
         for cluster_lbl, phases, conds, itrvs in\
             zip(cluster_lbls, self.phases, self.conds, self.itrvs):
-            true_lbl_combinations = list(product(phases, conds, itrvs))
-            ceil_lbl_combination = true_lbl_combinations[0]
-            for true_lbl_combination in true_lbl_combinations:
-                dupl_lbls["dept"].append(cluster_lbl)
-                dupl_lbls["true"].append("- ".join(true_lbl_combination))
-                dupl_lbls["ceil"].append("- ".join(ceil_lbl_combination))
+            
+            # Only processes clustered eligibility criteria (?)
+            if cluster_lbl != -1:
+                
+                # One label = one combination of phase/condition/intervention
+                true_lbl_combinations = list(product(phases, conds, itrvs))
+                ceil_lbl_combination = true_lbl_combinations[0]
+                for true_lbl_combination in true_lbl_combinations:
+                    dupl_lbls["dept"].append(cluster_lbl)
+                    dupl_lbls["true"].append("- ".join(true_lbl_combination))
+                    dupl_lbls["ceil"].append("- ".join(ceil_lbl_combination))
                 
         # Create a set of int labels for label-dependent metrics
         true_encoder = LabelEncoder()
@@ -548,7 +553,8 @@ class ClusterOutput:
                 pred_lbls = encoder.fit_transform(dupl_lbls[pred_type]).astype(np.int32)
             
             # Compute metrics with these labels
-            homogeneity, completeness, v_measure = homogeneity_completeness_v_measure(true_lbls, pred_lbls)
+            homogeneity, completeness, v_measure =\
+                homogeneity_completeness_v_measure(true_lbls, pred_lbls)
             cluster_metrics["label_%s" % pred_type] = {
                 "Homogeneity": homogeneity,
                 "Completeness": completeness,
@@ -563,6 +569,47 @@ class ClusterOutput:
         cluster_metrics["n_duplicated_samples"] = len(dupl_lbls["dept"])
         
         return cluster_metrics
+    
+    def build_subset_ct_to_cluster_matrix(
+        self,
+        subset_key: str,  # specific condition or intervention
+        cond_or_itrv: str,  # "cond", "itrv"
+        pos_or_neg: str,  # "pos", "neg"
+    ):
+        """ Build a matrix that summarizes cluster affordances for every clinical
+            trial that includes a given condition or intervention
+        """
+        assert cond_or_itrv in ["cond", "itrv"]
+        if cond_or_itrv == "cond":
+            keys = self.conds
+        else:
+            keys = self.itrvs
+            
+        assert pos_or_neg in ["pos", "neg"]
+        if pos_or_neg == "pos":
+            subset_ec_ids = [i for i, cs in enumerate(keys) if subset_key in cs]
+        else:
+            subset_ec_ids = [i for i, cs in enumerate(keys) if subset_key not in cs]
+            
+        cluster_lbls = self.cluster_info["cluster_ids"]
+        subset_ct_paths = [self.ct_paths[i] for i in subset_ec_ids]
+        subset_cluster_lbls = [cluster_lbls[i] for i in subset_ec_ids]
+        # subset_cluster_lbls = [l for l in subset_cluster_lbls if l != -1]
+        
+        unique_subset_ct_paths = list(set(subset_ct_paths))
+        unique_cluster_labels = list(set(cluster_lbls))
+        n_subset_ct_paths = len(unique_subset_ct_paths)
+        n_cluster_lbls = len(unique_cluster_labels)
+        
+        if len(unique_subset_ct_paths) <= 10:
+            return None
+        
+        ct_path_keys = {ct_id: i for i, ct_id in enumerate(unique_subset_ct_paths)}
+        ct_to_cluster_matrix = np.zeros((n_cluster_lbls, n_subset_ct_paths), dtype=int)
+        for cluster_lbl, ct_id in zip(subset_cluster_lbls, subset_ct_paths):
+            ct_to_cluster_matrix[cluster_lbl, ct_path_keys[ct_id]] = 1
+        
+        return ct_to_cluster_matrix
     
     @staticmethod
     def dunn_index(cluster_data: np.ndarray, cluster_lbls: np.ndarray) -> float:
@@ -589,7 +636,8 @@ class ClusterOutput:
         for do_top_k in [True, False]:
             
             # Retrieve cluster data (clusters are already sorted by n_sample)
-            clusters = [c for c in self.cluster_instances]  # if c.cluster_id != -1]
+            # clusters = [c for c in self.cluster_instances]  # if c.cluster_id != -1]
+            clusters = [c for c in self.cluster_instances if c.cluster_id != -1]
             if do_top_k:
                 clusters = clusters[:top_k]
                 symbol_seq = ["circle", "square", "diamond", "x"]

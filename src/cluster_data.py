@@ -25,7 +25,7 @@ from bertopic.representation import OpenAI
 from sklearn.feature_extraction.text import CountVectorizer
 
 
-def main():
+def run_all_config_models():
     """ If ran as a script, call cluster_data for several models and write
         a summary of results to the output directory
     """
@@ -54,7 +54,10 @@ def cluster_data_fn(embed_model_id: str) -> ClusterOutput:
     # Initialization
     cfg = config.get_config()
     set_seeds(cfg["RANDOM_STATE"])  # try to ensure reproducibility
-    bertopic_ckpt_path = os.path.join(cfg["PROCESSED_DIR"], "bertopic_model")
+    bertopic_ckpt_path = os.path.join(
+        cfg["PROCESSED_DIR"],
+        "bertopic_model_%s" % embed_model_id,
+    )
     
     # Generate or load elibibility criterion texts, embeddings, and metadatas
     logger.info("Getting elibility criteria embeddings from %s" % embed_model_id)
@@ -67,7 +70,7 @@ def cluster_data_fn(embed_model_id: str) -> ClusterOutput:
     # Generate cluster representation with BERTopic
     if not cfg["LOAD_BERTOPIC_RESULTS"]:
         topic_model = train_bertopic_model(raw_txts, embeddings)
-        if cfg["ENVIRONMENT"] == "ctgov":
+        if cfg["ENVIRONMENT"] == "ctgov" and cfg["CLUSTER_REPRESENTATION_MODEL"] is None:
             topic_model.save(bertopic_ckpt_path)
     
     # Load BERTopic cluster representation from previous run (only for ctgov)
@@ -155,38 +158,37 @@ def plot_model_comparison(metrics: dict, output_path: str, fig_title: str):
     """ Generate a comparison plot between models, based on how model embeddings
         produce good clusters
     """
-    # Load, parse, and normalize data
-    to_plot = [
-        "Silhouette score", "DB index", "Dunn index",  # "MI score",
-        "AMI score", "Homogeneity", "Completeness", "V measure",
-    ]
+    # Function to keep only what will be plotted
     def norm_fn(d: dict[str, dict], dept_key: str) -> dict:
+        to_plot = [
+            "Silhouette score", "DB index", "Dunn index",  # "MI score",
+            "AMI score", "Homogeneity", "Completeness", "V measure",
+        ]    
         d_free, d_dept = d["label_free"], d["label_%s" % dept_key]
         d_free = {k: v for k, v in d_free.items() if k in to_plot}
         d_dept = {k: d_dept[k] for k in d_dept.keys() if k in to_plot}
+        # d_dept.update(d_free)  # only d_dept for now
         return d_dept
-        # d_free.update(d_dept)
-        # return d_free
     
-    # Grosse arrache
-    metrics = {
-        "model": norm_fn(list(metrics.values())[0], "dept"),
-        "ceiling": norm_fn(list(metrics.values())[0], "ceil"),
-        "random": norm_fn(list(metrics.values())[0], "rand"),
-    }
+    # Select data to plot
+    to_plot = {}
+    for (model_name, metric) in metrics.items():
+        to_plot[model_name] = norm_fn(metric, "dept")
+    to_plot["rand"] = norm_fn(list(metrics.values())[0], "rand")
+    # to_plot["ceil"] = norm_fn(list(metrics.values())[0], "ceil")
     
     # Retrieve metric labels and model names
-    labels = list(next(iter(metrics.values())).keys())
-    num_models = len(metrics.keys())
+    labels = list(next(iter(to_plot.values())).keys())
+    num_models = len(to_plot.keys())
     width = 0.8 / num_models  # Adjust width based on number of models
     
     # Plot metrics for each model
     fig, ax = plt.subplots(figsize=(12, 5))
-    for idx, (model_name, metrics) in enumerate(metrics.items()):
+    for idx, (model_name, metric) in enumerate(to_plot.items()):
         
         # Plot metric values
         x_values = [i + idx * width for i, _ in enumerate(labels)]
-        y_values = list(metrics.values())
+        y_values = list(metric.values())
         rects = ax.bar(x_values, y_values, width, label=model_name)
         
         # Auto-label the bars
@@ -203,7 +205,7 @@ def plot_model_comparison(metrics: dict, output_path: str, fig_title: str):
             
     # Adjustments to the plot
     ax.set_title(fig_title, fontsize="x-large")
-    ax.set_ylim(0.0, 1.0)
+    ax.set_ylim(0.0, 1.0 if "ceil" in to_plot.keys() else 0.2)
     ax.set_xticks([i + width * (num_models - 1) / 2 for i in range(len(labels))])
     ax.set_xticklabels(labels, fontsize="large", rotation=22.5)
     ax.set_ylabel("Scores", fontsize="x-large")
@@ -216,5 +218,5 @@ def plot_model_comparison(metrics: dict, output_path: str, fig_title: str):
 
     
 if __name__ == "__main__":
-    main()
+    run_all_config_models()
     

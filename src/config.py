@@ -63,6 +63,11 @@ def align_config(cfg):
     logger = CTxAILogger("INFO")
     if "ctxai" in cfg["ENVIRONMENT"]:
         
+        # Make sure USER_ID and PROJECT_ID are not overwritten by script
+        if cfg["SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY"]:
+            cfg["SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY"] = False
+            log_warning(field, False, "SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY", "ctxai")
+        
         # Make sure loading from cache is disabled for ctxai environment
         for field in [
             "LOAD_PARSED_DATA",
@@ -98,6 +103,14 @@ def align_config(cfg):
                 log_warning(field, None, "ENVIRONMENT", "ctxai")
     
     # Generate a common directory for all outputs of the pipeline
+    if cfg["SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY"]:
+        cond_itrv_str = "-".join(cfg["CHOSEN_COND_IDS"] + cfg["CHOSEN_ITRV_IDS"])
+        cfg["USER_ID"] = "%s-%s" % (cfg["ENVIRONMENT"], cond_itrv_str)
+        cfg["PROJECT_ID"] = "cond-lvl-%s_itrv-lvl-%s_cluster-%s-%s_plot-%s-%s" % (
+            cfg["CHOSEN_COND_LVL"], cfg["CHOSEN_ITRV_LVL"],
+            cfg["CLUSTER_DIM_RED_ALGO"], cfg["CLUSTER_RED_DIM"],
+            cfg["PLOT_DIM_RED_ALGO"], cfg["PLOT_RED_DIM"],
+        )
     output_dir = os.path.join(base_dir, cfg["USER_ID"], cfg["PROJECT_ID"])
     if cfg["USER_FILTERING"] is not None:
         output_dir = os.path.join(output_dir, cfg["USER_FILTERING"])
@@ -132,6 +145,9 @@ class CTxAILogger:
 
     def warning(self, message):
         self.logger.warning(f"WARNING: {message}")
+        
+    def error(self, message):
+        self.logger.error(f"ERROR: {message}")
 
     def set_level(self, level):
         levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
