@@ -64,9 +64,10 @@ def align_config(cfg):
     if "ctxai" in cfg["ENVIRONMENT"]:
         
         # Make sure USER_ID and PROJECT_ID are not overwritten by script
-        if cfg["SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY"]:
-            cfg["SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY"] = False
-            log_warning(field, False, "SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY", "ctxai")
+        field = "SELECT_USER_ID_AND_PROJECT_ID_AUTOMATICALLY"
+        if cfg[field] != False:
+            cfg[field] = False
+            log_warning(field, False, "ENVIRONMENT", "ctxai")
         
         # Make sure loading from cache is disabled for ctxai environment
         for field in [
