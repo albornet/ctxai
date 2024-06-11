@@ -21,7 +21,7 @@ def predict():
             logger.info("Running all models because API is called")
     else:
         required_keys = [
-            "ENVIRONMNET",
+            "ENVIRONMENT",
             "DATA_PATH",
             "USER_ID",
             "PROJECT_ID",
