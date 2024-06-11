@@ -40,12 +40,12 @@ def predict():
     
     # Cluster pre-processed data
     logger.info("Clustering procedure started")
-    if not request_data["SCRIPT_MODE"]:
-        cluster_output = cluster_data_fn(request_data["EMBEDDING_MODEL_ID"])
-    else:
+    if "SCRIPT_MODE" in request_data:
         run_all_config_models()
         results = {"status": "success", "message": "Task completed successfully"}
         return jsonify(results), 200
+    else:
+        cluster_output = cluster_data_fn(request_data["EMBEDDING_MODEL_ID"])
     
     # Return jsonified file paths corresponding to the written data and plot
     logger.info("Clustering procedure finished")
