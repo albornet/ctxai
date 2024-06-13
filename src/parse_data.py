@@ -75,10 +75,13 @@ def parse_data_fn() -> None:
         dl = DataLoader2(ds, reading_service=rs)
         
         # Write parsed criteria to the output file
-        for data in tqdm(dl, desc="Clinical trials processed so far"):
+        try:
             with open(csv_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerows(data)
+                for data in tqdm(dl, desc="Clinical trials processed so far"):
+                    writer = csv.writer(f)
+                    writer.writerows(data)
+        except Exception:
+            logger.warning("Failed to close all processes properly, still continuing")
                 
         # Close data pipeline
         dl.shutdown()
@@ -130,6 +133,7 @@ class CustomJsonParser(dpi.JsonParser):
                 yield file_name, json.loads(data, **self.kwargs)
             except json.decoder.JSONDecodeError:
                 logger.info("Empty json file - skipping to next file.")
+                stream.close()
             
 
 if __name__ == "__main__":
