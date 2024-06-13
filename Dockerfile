@@ -17,7 +17,7 @@ RUN apt-get update -y \
     && pip install --no-cache-dir \
         bertopic==0.16.0 \
         torchmetrics==1.2.0 \
-        torchdata==0.7.1 \
+        torchdata==0.7.0 \
         openpyxl==3.1.2 \
         openai==1.9.0 \
         optuna==3.5.0 \
