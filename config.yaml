@@ -7,7 +7,7 @@ PROJECT_ID: example_project_id  # any string (overwritten if SELECT_USER_ID_AND_
 USER_FILTERING: null  # null, intervention, condition, intersection
 OPTUNA_SAMPLER: tpe  # tpe (presumably better), random (seed presumably more stable)
 RANDOM_STATE: 0123
-LOAD_PARSED_DATA: true
+LOAD_PARSED_DATA: false
 LOAD_EMBEDDINGS: false  # set to false if you change CHOSEN_COND/ITRV_LVL/IDS
 LOAD_BERTOPIC_RESULTS: false
 
@@ -38,7 +38,7 @@ MESH_CROSSWALK_PATH: utils/mesh_crosswalk.json
 MESH_CROSSWALK_INVERTED_PATH: utils/mesh_crosswalk_inverted.json
 
 # Eligibility criteria filtering parameters
-CHOSEN_STATUSES: [completed, terminated]  # [completed, suspended, withdrawn, terminated, unknown status]
+CHOSEN_STATUSES: []  # [completed, terminated]  # [completed, suspended, withdrawn, terminated, unknown status]
 CHOSEN_CRITERIA: []  # [in]
 CHOSEN_PHASES: []  # [Phase 2]
 CHOSEN_COND_IDS: []  # Infections [C01] // Neoplasms [C04] // Cardiovascular Diseases [C14] // Immune System Diseases [C20]
@@ -52,12 +52,12 @@ MAX_ELIGIBILITY_CRITERIA_SAMPLES: 2_000_000  # ct-gov has maximum 1740170 criter
 EMBEDDING_BATCH_SIZE: 64
 EMBEDDING_MODEL_ID_MAP:
   pubmed-bert-sentence: pritamdeka/S-PubMedBert-MS-MARCO
-  # transformer-sentence: sentence-transformers/all-mpnet-base-v2
-  bert-sentence: efederici/sentence-bert-base
-  pubmed-bert-token: microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext
-  # bioct-bert-token: domenicrosati/ClinicalTrialBioBert-NLI4CT
-  # roberta: roberta-large
-  bert: bert-large-uncased
+  # # transformer-sentence: sentence-transformers/all-mpnet-base-v2
+  # bert-sentence: efederici/sentence-bert-base
+  # pubmed-bert-token: microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext
+  # # bioct-bert-token: domenicrosati/ClinicalTrialBioBert-NLI4CT
+  # # roberta: roberta-large
+  # bert: bert-large-uncased
 
 # Clustering hyper-optimization parameters
 N_OPTUNA_TRIALS: 100
