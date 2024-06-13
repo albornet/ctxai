@@ -247,7 +247,12 @@ class CriteriaParser(IterDataPipe):
         """
         text = text.replace("e.g.", "e_g_")\
                    .replace("i.e.", "i_e_")\
-                   .replace("etc.", "etc_")
+                   .replace("etc.", "etc_")\
+                   .replace("<br>", "\n")\
+                   .replace("<br/>", " ")\
+                   .replace("<br />", " ")\
+                   .replace("<br/ >", " ")
+        text = re.sub(r'\s+', ' ', text)  # single spaces only
         splits = [s.strip() for s in sent_tokenize(text) if s.strip()]
         return [s.replace("e_g_", "e.g.")
                  .replace("i_e_", "i.e.")
@@ -398,7 +403,7 @@ class CriteriaCSVWriter(IterDataPipe):
 @functional_datapipe("read_xlsx_lines")
 class CustomXLSXLineReader(IterDataPipe):
     def __init__(self, dp):
-        """ Lalalala
+        """ Read a collection of xlsx files and yield lines one by one
         """
         self.dp = dp
         self.metadata_mapping = {
@@ -418,8 +423,8 @@ class CustomXLSXLineReader(IterDataPipe):
         ]
     
     def __iter__(self):
-        for file_name in self.dp:
-            sheet_df = pd.ExcelFile(file_name).parse("metadata").fillna("")
+        for file_name in self.dp:  # note the double "for" loop!
+            sheet_df = pd.read_excel(file_name).fillna("")
             crit_str_list = self.extract_criteria_strs(sheet_df)
             metatdata_dict_list = self.extract_metadata_dicts(sheet_df)
             for crit_str, metadata in zip(crit_str_list, metatdata_dict_list):
@@ -571,9 +576,9 @@ class EligibilityCriteriaFilter(IterDataPipe):
             ct_metadata, ct_not_filtered = self._filter_fn(sample)
             if not ct_not_filtered: continue
             
-            # Yield sample and metadata ("labels") if all is good
+            # Yield sample and metadata ("labels") if all is good and unique
             input_text = self._build_input_text(sample)
-            if input_text not in self.yielded_input_texts:
+            if input_text not in self.yielded_input_texts:  # unique condition
                 self.yielded_input_texts.append(input_text)
                 yield input_text, ct_metadata
             
