@@ -14,7 +14,6 @@ import random
 import numpy as np
 import pandas as pd
 import plotly.express as px
-import matplotlib.pyplot as plt
 from itertools import product
 from collections import defaultdict
 from dataclasses import dataclass, asdict
@@ -26,8 +25,15 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 from optuna.samplers import TPESampler, RandomSampler
 from dask_cuda import LocalCUDACluster
 from dask.distributed import Client
+from hdbscan import all_points_membership_vectors
 from cuml import HDBSCAN
 from cuml.metrics.cluster import silhouette_score
+
+# Error handling for GPU
+import pynvml
+import rmm
+import logging
+logging.getLogger("distributed.utils_perf").setLevel(logging.ERROR)
 
 # Evaluation
 import torch
@@ -74,21 +80,36 @@ class ClusterGeneration:
     def fit(self, X: np.ndarray) -> dict:
         """ Use optuna to determine best set of cluster parameters
         """
-        with LocalCUDACluster(n_workers=1, processes=True) as cluster:
+        with LocalCUDACluster(
+            n_workers=1,
+            processes=True,
+        ) as cluster:
             with Client(cluster, timeout="120s") as client:
+                
+                # GPU memory management
+                pynvml.nvmlInit()
+                rmm.reinitialize(managed_memory=True)
+                
+                # Initialize optuna study
                 study = optuna.create_study(
                     sampler=self.sampler,
-                    direction="maximize"
+                    direction="maximize",
                 )
+                
+                # Find best set of hyper-parameters
                 objective = lambda trial: self.objective_fn(trial, X)
                 study.optimize(
                     func=objective,
                     n_trials=self.n_optuna_trials,
                     show_progress_bar=True,
+                    gc_after_trial=True,
                 )
                 
+                # GPU memory management
+                pynvml.nvmlShutdown()
+                
         self.best_hyper_params = study.best_params
-        self.labels_ = self.predict(X)  # not sur if I'm doing this right (but it works)
+        self.labels_ = self.predict(X)
         return self
         
     def predict(self, X: np.ndarray) -> list[int]:
@@ -98,7 +119,8 @@ class ClusterGeneration:
         self.cluster_info = self.clusterize(data=X, mode="primary", params=params)
         if self.cluster_info is not None and self.do_subclusterize:
             self.cluster_info = self.subclusterize(self.cluster_info, params=params)
-        return self.cluster_info["clusterer"].labels_
+        # return self.cluster_info["clusterer"].labels_
+        return self.cluster_info["cluster_ids"]
 
     def objective_fn(self, trial: optuna.Trial, data: np.ndarray) -> float:
         """ Suggest a new set of hyper-parameters and compute associated metric
@@ -159,17 +181,22 @@ class ClusterGeneration:
             if isinstance(value, float): value = int(n_samples * value)
             return min(max(min_value, value), max_value)
         
-        # Return all selected cluster parameters
+        # Return cluster parameters
         return {
             "cluster_selection_method": cluster_selection_method,
             "alpha": alpha,
             "allow_single_cluster": True,
             "max_cluster_size": adapt_param_fn(max_cluster_size, 100),
             "min_cluster_size": adapt_param_fn(min_cluster_size, 10),
-            "min_samples": adapt_param_fn(min_samples, 10, 1023),  # 2 ** 10 - 1
+            "min_samples": adapt_param_fn(min_samples, 10, 128),  # 1023
         }
 
-    def clusterize(self, data: np.ndarray, mode: str, params: dict) -> dict:
+    def clusterize(
+        self,
+        data: np.ndarray,
+        mode: str,
+        params: dict,
+    ) -> dict:
         """ Cluster data points with hdbscan algorithm and return cluster information
         """
         # Identify cluster parameters given the data and cluster mode
@@ -177,18 +204,32 @@ class ClusterGeneration:
         
         # Find cluster affordances based on cluster hierarchy
         set_seeds(self.random_state)  # try to ensure reproducibility
-        clusterer = HDBSCAN(**cluster_params)
+        clusterer = HDBSCAN(**cluster_params)  # prediction_data=True)
         clusterer.fit(data)
-        cluster_ids = clusterer.labels_
+        
+        # Identify main cluster ids
+        if mode == "primary":
+            cluster_ids = clusterer.labels_
+            # cfg = config.get_config()
+            # if cfg["DO_SOFT_CLUSTERING"]:
+            #     unclustered_locs = np.where(cluster_ids == -1)[0]
+            #     soft_cluster_memberships = all_points_membership_vectors(clusterer)
+            #     max_values = soft_cluster_memberships.max(axis=1)
+            #     max_indices = soft_cluster_memberships.argmax(axis=1)
+            #     valid_locs = unclustered_locs[max_values[unclustered_locs] > 0.5]
+            #     cluster_ids[valid_locs] = max_indices[valid_locs]
+        
+        # Identify sub-cluster ids
+        else:
+            cluster_ids = clusterer.labels_
+            cluster_ids[np.where(cluster_ids == -1)] = 0
+        
+        # Build lists of sample ids for each cluster
         n_clusters = np.max(cluster_ids).item() + 1  # -1 not counted in n_clusters
         member_ids = {
             k: np.where(cluster_ids == k)[0].tolist() for k in range(-1, n_clusters)
         }
         
-        # Put back unclustered samples if secondary mode
-        if mode == "secondary":
-            cluster_ids[np.where(cluster_ids == -1)] = 0
-            
         # Return cluster info
         return {
             "clusterer": clusterer,
@@ -360,15 +401,17 @@ class ClusterOutput:
         """
         original_cluster_info = topic_model.hdbscan_model.cluster_info
         cluster_ids = np.array(topic_model.topics_)
-        n_clusters = cluster_ids.max() + 1
+        min_cluster_id = cluster_ids.min()  # -1 may or may not be in cluster_ids
+        n_clusters = cluster_ids.max() + 1  # -1 not counted in n_cluster
         member_ids = {
             k: np.where(cluster_ids == k)[0].tolist()
-            for k in range(-1, n_clusters)
+            for k in range(min_cluster_id, n_clusters)
         }
         return {
             "clusterer": original_cluster_info["clusterer"],
             "cluster_data": original_cluster_info["cluster_data"],
             "n_clusters": n_clusters,
+            "min_cluster_id": min_cluster_id,  # -1 or 0
             "cluster_ids": cluster_ids,
             "member_ids": member_ids,
         }
@@ -453,7 +496,10 @@ class ClusterOutput:
         n_cts = len(set(self.ct_paths))
         cluster_sample_paths = {
             cluster_id: [p for p, l in zipped_paths if l == cluster_id]
-            for cluster_id in range(-1, self.cluster_info["n_clusters"])
+            for cluster_id in range(
+                self.cluster_info["min_cluster_id"],  # -1 or 0
+                self.cluster_info["n_clusters"],
+            )
         }
         cluster_prevalences = {
             cluster_id: len(set(paths)) / n_cts  # len(paths) / token_info["ct_ids"]
@@ -466,9 +512,9 @@ class ClusterOutput:
         cluster_member_ids = self.cluster_info["member_ids"]
         cluster_sorted_member_ids = {}
         for k, member_ids in cluster_member_ids.items():
-            medoid = cluster_medoids[k]
+            medoid = cluster_medoids[k][np.newaxis, :]
             members_data = cluster_data[member_ids]
-            distances = cdist(medoid[np.newaxis, :], members_data)[0]
+            distances = cdist(medoid, members_data)[0]
             sorted_indices = np.argsort(np.nan_to_num(distances).flatten())
             cluster_sorted_member_ids[k] = [
                 member_ids[idx] for idx in sorted_indices.get()
@@ -485,7 +531,10 @@ class ClusterOutput:
             weighting by the sample probability of being in that cluster
         """
         cluster_medoids = {}
-        for label in range(-1, cluster_info["n_clusters"]):  # including unassigned
+        for label in range(
+            self.cluster_info["min_cluster_id"],  # -1 or 0
+            cluster_info["n_clusters"],
+        ):
             cluster_ids = np.where(cluster_info["cluster_ids"] == label)[0]
             cluster_data = cluster_info["cluster_data"][cluster_ids]
             cluster_medoids[label] = self.compute_medoid(cluster_data)
@@ -527,7 +576,7 @@ class ClusterOutput:
         for cluster_lbl, phases, conds, itrvs in\
             zip(cluster_lbls, self.phases, self.conds, self.itrvs):
             
-            # Only processes clustered eligibility criteria (?)
+            # Only evaluates clustered eligibility criteria
             if cluster_lbl != -1:
                 
                 # One label = one combination of phase/condition/intervention
@@ -636,8 +685,7 @@ class ClusterOutput:
         for do_top_k in [True, False]:
             
             # Retrieve cluster data (clusters are already sorted by n_sample)
-            # clusters = [c for c in self.cluster_instances]  # if c.cluster_id != -1]
-            clusters = [c for c in self.cluster_instances if c.cluster_id != -1]
+            clusters = [c for c in self.cluster_instances]  # if c.cluster_id != -1]
             if do_top_k:
                 clusters = clusters[:top_k]
                 symbol_seq = ["circle", "square", "diamond", "x"]
