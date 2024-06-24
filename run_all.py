@@ -46,21 +46,21 @@ def main():
     """
     # Define your sequence of environments and data paths
     tasks = [
-        {"chosen_cond_ids": [], "chosen_cond_lvl": 2, "chosen_itrv_lvl": 1},
         # {"chosen_cond_ids": ["C01"], "chosen_cond_lvl": 2, "chosen_itrv_lvl": 1},
-        # {"chosen_cond_ids": ["C04"], "chosen_cond_lvl": 2, "chosen_itrv_lvl": 1},
-        # {"chosen_cond_ids": ["C14"], "chosen_cond_lvl": 2, "chosen_itrv_lvl": 1},
-        # {"chosen_cond_ids": ["C20"], "chosen_cond_lvl": 2, "chosen_itrv_lvl": 1},
-        {"chosen_cond_ids": [], "chosen_cond_lvl": 3, "chosen_itrv_lvl": 2},
         # {"chosen_cond_ids": ["C01"], "chosen_cond_lvl": 3, "chosen_itrv_lvl": 2},
-        # {"chosen_cond_ids": ["C04"], "chosen_cond_lvl": 3, "chosen_itrv_lvl": 2},
-        # {"chosen_cond_ids": ["C14"], "chosen_cond_lvl": 3, "chosen_itrv_lvl": 2},
-        # {"chosen_cond_ids": ["C20"], "chosen_cond_lvl": 3, "chosen_itrv_lvl": 2},
-        {"chosen_cond_ids": [], "chosen_cond_lvl": 4, "chosen_itrv_lvl": 3},
         # {"chosen_cond_ids": ["C01"], "chosen_cond_lvl": 4, "chosen_itrv_lvl": 3},
+        # {"chosen_cond_ids": ["C04"], "chosen_cond_lvl": 2, "chosen_itrv_lvl": 1},
+        # {"chosen_cond_ids": ["C04"], "chosen_cond_lvl": 3, "chosen_itrv_lvl": 2},
         # {"chosen_cond_ids": ["C04"], "chosen_cond_lvl": 4, "chosen_itrv_lvl": 3},
+        # {"chosen_cond_ids": ["C14"], "chosen_cond_lvl": 2, "chosen_itrv_lvl": 1},
+        # {"chosen_cond_ids": ["C14"], "chosen_cond_lvl": 3, "chosen_itrv_lvl": 2},
         # {"chosen_cond_ids": ["C14"], "chosen_cond_lvl": 4, "chosen_itrv_lvl": 3},
+        # {"chosen_cond_ids": ["C20"], "chosen_cond_lvl": 2, "chosen_itrv_lvl": 1},
+        # {"chosen_cond_ids": ["C20"], "chosen_cond_lvl": 3, "chosen_itrv_lvl": 2},
         # {"chosen_cond_ids": ["C20"], "chosen_cond_lvl": 4, "chosen_itrv_lvl": 3},
+        {"chosen_cond_ids": ["C01", "C04", "C14", "C20"], "chosen_cond_lvl": 2, "chosen_itrv_lvl": 1},
+        {"chosen_cond_ids": ["C01", "C04", "C14", "C20"], "chosen_cond_lvl": 3, "chosen_itrv_lvl": 2},
+        {"chosen_cond_ids": ["C01", "C04", "C14", "C20"], "chosen_cond_lvl": 4, "chosen_itrv_lvl": 3},
     ]
 
     for task in tasks:

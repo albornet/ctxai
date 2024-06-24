@@ -80,9 +80,12 @@ def parse_data_fn() -> None:
                 for data in tqdm(dl, desc="Clinical trials processed so far"):
                     writer = csv.writer(f)
                     writer.writerows(data)
-        except Exception:
-            logger.warning("Failed to close all processes properly, still continuing")
-                
+        except Exception as e:
+            if "Can not request next item" in str(e):
+                logger.warning("Failed to close processes properly, still continuing")
+            else:
+                raise
+            
         # Close data pipeline
         dl.shutdown()
         logger.info("All criteria have been parsed")
@@ -108,16 +111,17 @@ def get_dataset(data_path: str, environment: str) -> dpi.IterDataPipe:
     # Load data inside each file
     if environment == "ctgov":
         jsons = dpi.FileOpener(files, encoding="utf-8")
+        jsons = dpi.ShardingFilter(jsons)
         dicts = CustomJsonParser(jsons)
         raw_samples = ClinicalTrialFilter(dicts)
     elif "ctxai" in environment:
         raw_samples = CustomXLSXLineReader(files)
+        raw_samples = dpi.ShardingFilter(raw_samples)
     else:
         raise ValueError("Incorrect ENVIRONMENT field in config.")
         
     # Parse criteria
-    sharded_samples = dpi.ShardingFilter(raw_samples)
-    parsed_samples = CriteriaParser(sharded_samples)
+    parsed_samples = CriteriaParser(raw_samples)
     written = CriteriaCSVWriter(parsed_samples)
     return written
 

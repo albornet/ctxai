@@ -79,10 +79,12 @@ class ClinicalTrialFilter(IterDataPipe):
     def __iter__(self):
         for ct_path, ct_dict in self.dp:
             # Load protocol and make sure it corresponds to the file name
-            protocol = ct_dict["FullStudy"]["Study"]["ProtocolSection"]
-            derived = ct_dict["FullStudy"]["Study"]["DerivedSection"]
-            nct_id = protocol["IdentificationModule"]["NCTId"]
-            assert nct_id == os.path.split(ct_path)[-1].strip(".json")
+            ct_dict = self.lower_keys(ct_dict)  # CT.gov updated json keys
+            protocol = ct_dict["protocolsection"]
+            derived = ct_dict["derivedsection"]
+            nct_id = protocol["identificationmodule"]["nctid"]
+            file_nct_id = os.path.split(ct_path)[-1].strip(".json")
+            assert nct_id == file_nct_id
             
             # Check protocol belongs to the data and load criteria
             good_to_go, label, phases, conditions, cond_ids, itrv_ids =\
@@ -96,62 +98,98 @@ class ClinicalTrialFilter(IterDataPipe):
                     "condition_ids": cond_ids,
                     "intervention_ids": itrv_ids,
                 }
-                criteria_str = protocol["EligibilityModule"]["EligibilityCriteria"]
+                criteria_str = protocol["eligibilitymodule"]["eligibilitycriteria"]
                 yield metadata, criteria_str
-                
-    def check_protocol(self, protocol, derived):
+    
+    def lower_keys(self, dictionary: dict) -> dict:
+        if isinstance(dictionary, dict):
+            return {
+                k.lower(): self.lower_keys(v)
+                for k, v in dictionary.items()
+            }
+        elif isinstance(dictionary, list):
+            return [self.lower_keys(item) for item in dictionary]
+        else:
+            return dictionary
+    
+    def check_protocol(
+        self,
+        protocol: dict,
+        derived: dict,
+    ) -> tuple[bool, str, list[str], list[str], list[str], list[str]]:
         """ Parse clinical trial protocol and make sure it can be used as a data
-            sample for eligibility criteria representation learning 
+            sample for eligibility criteria representation learning
         """
         # Check the status of the CT is either completed or terminated
-        status = protocol["StatusModule"]["OverallStatus"]
-        if status not in ["Completed", "Terminated"]:
+        status = protocol["statusmodule"]["overallstatus"].lower()
+        if status not in ["completed", "terminated"]:
             return False, None, None, None, None, None
         
         # Check that the study is interventional
-        study_type = protocol["DesignModule"]["StudyType"]
-        if study_type != "Interventional":
+        study_type = protocol["designmodule"]["studytype"].lower()
+        if study_type != "interventional":
             return False, None, None, None, None, None
         
         # Check the study is about a drug test
-        interventions = protocol[
-            "ArmsInterventionsModule"]["InterventionList"]["Intervention"]
-        intervention_types = [i["InterventionType"] for i in interventions]
-        if "Drug" not in intervention_types:
+        itrv_module = protocol["armsinterventionsmodule"]
+        try:
+            itrvs = itrv_module["interventionlist"]["intervention"]
+            itrv_types = [i["interventiontype"].lower() for i in itrvs]
+        except KeyError:
+            itrvs = itrv_module["interventions"]
+            itrv_types = [i["type"].lower() for i in itrvs]
+        if "drug" not in itrv_types:
             return False, None, None, None, None, None
         
         # Check the study has defined phases, then record phases
-        if "PhaseList" not in protocol["DesignModule"]:
+        design_module = protocol["designmodule"]
+        if "phaselist" in design_module:
+            phases = design_module["phaselist"]["phase"]
+        elif "phases" in design_module:
+            phases = design_module["phases"]
+        else:
             return False, None, None, None, None, None
-        phases = protocol["DesignModule"]["PhaseList"]["Phase"]
+        phases = [phase.replace(" ", "").lower() for phase in phases]
         
         # Check that the protocol has an eligibility criterion section
-        if "EligibilityCriteria" not in protocol["EligibilityModule"]:
+        if "eligibilitycriteria" not in protocol["eligibilitymodule"]:
             return False, None, None, None, None, None
         
         # Check that the protocol has a condition list
-        if "ConditionList" not in protocol["ConditionsModule"]:
+        cond_module = protocol["conditionsmodule"]
+        if "conditionlist" in cond_module:
+            conditions = cond_module["conditionlist"]["condition"]
+        elif "conditions" in cond_module:
+            conditions = cond_module["conditions"]
+        else:
             return False, None, None, None, None, None
-        conditions = protocol["ConditionsModule"]["ConditionList"]["Condition"]
         
         # Try to load condition mesh ids
-        try:
-            conds = derived["ConditionBrowseModule"]["ConditionMeshList"]
-            cond_ids = [c["ConditionMeshId"] for c in conds["ConditionMesh"]]
-        except KeyError:
+        cond_browse_module = derived.get("conditionbrowsemodule", {})
+        if "conditionmeshlist" in cond_browse_module:
+            cond_meshes = cond_browse_module["conditionmeshlist"]["conditionmesh"]
+            cond_ids = [c["conditionmeshid"] for c in cond_meshes]
+        elif "meshes" in cond_browse_module:
+            cond_meshes = cond_browse_module["meshes"]
+            cond_ids = [c["id"] for c in cond_meshes]
+        else:
             cond_ids = []
-        cond_treenums = self.convert_unique_ids_to_tree_nums(cond_ids)
-                
+        cond_tree_nums = self.convert_unique_ids_to_tree_nums(cond_ids)
+        
         # Try to load intervention mesh ids
-        try:
-            itrvs = derived["InterventionBrowseModule"]["InterventionMeshList"]
-            itrv_ids = [i["InterventionMeshId"] for i in itrvs["InterventionMesh"]]
-        except KeyError:
+        itrv_browse_module = derived.get("interventionbrowsemodule", {})
+        if "interventionmeshlist" in itrv_browse_module:
+            itrv_meshes = itrv_browse_module["interventionmeshlist"]["interventionmesh"]
+            itrv_ids = [c["interventionmeshid"] for c in itrv_meshes]
+        elif "meshes" in itrv_browse_module:
+            itrv_meshes = itrv_browse_module["meshes"]
+            itrv_ids = [c["id"] for c in itrv_meshes]
+        else:
             itrv_ids = []
         itrv_tree_nums = self.convert_unique_ids_to_tree_nums(itrv_ids)
         
         # Return that the protocol can be processed, status, and phase list
-        return True, status, phases, conditions, cond_treenums, itrv_tree_nums
+        return True, status, phases, conditions, cond_tree_nums, itrv_tree_nums
     
     def convert_unique_ids_to_tree_nums(self, unique_ids):
         """ Try to convert a maximum of unique id found in a clinical trial to
