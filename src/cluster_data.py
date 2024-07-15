@@ -48,11 +48,17 @@ def run_all_config_models():
     logger.info("Model comparison finished!")
 
 
-def cluster_data_fn(embed_model_id: str) -> ClusterOutput:
+def cluster_data_fn(
+    embed_model_id: str,
+    write_results: bool=True,
+) -> ClusterOutput:
     """ Cluster eligibility criteria using embeddings from one language model
     """
     # Initialization
     cfg = config.get_config()
+    if write_results:
+        os.makedirs(cfg["PROCESSED_DIR"], exist_ok=True)
+        os.makedirs(cfg["RESULT_DIR"], exist_ok=True)
     set_seeds(cfg["RANDOM_STATE"])  # try to ensure reproducibility
     bertopic_ckpt_path = os.path.join(
         cfg["PROCESSED_DIR"],
@@ -65,12 +71,15 @@ def cluster_data_fn(embed_model_id: str) -> ClusterOutput:
         embed_model_id=embed_model_id,
         preprocessed_dir=cfg["PREPROCESSED_DIR"],
         processed_dir=cfg["PROCESSED_DIR"],
+        write_results=write_results,
     )
     
     # Generate cluster representation with BERTopic
     if not cfg["LOAD_BERTOPIC_RESULTS"]:
         topic_model = train_bertopic_model(raw_txts, embeddings)
-        if cfg["ENVIRONMENT"] == "ctgov" and cfg["CLUSTER_REPRESENTATION_MODEL"] is None:
+        if cfg["ENVIRONMENT"] == "ctgov"\
+        and cfg["CLUSTER_REPRESENTATION_MODEL"] is None\
+        and write_results:
             topic_model.save(bertopic_ckpt_path)
     
     # Load BERTopic cluster representation from previous run (only for ctgov)
@@ -89,6 +98,7 @@ def cluster_data_fn(embed_model_id: str) -> ClusterOutput:
         topic_model=topic_model,
         raw_txts=raw_txts,
         metadatas=metadatas,
+        write_results=write_results,
     )
 
 

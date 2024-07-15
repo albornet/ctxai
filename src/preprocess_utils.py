@@ -590,6 +590,7 @@ class EligibilityCriteriaFilter(IterDataPipe):
         self.chosen_itrv_ids = cfg["CHOSEN_ITRV_IDS"]
         self.chosen_cond_lvl = cfg["CHOSEN_COND_LVL"]
         self.chosen_itrv_lvl = cfg["CHOSEN_ITRV_LVL"]
+        self.additional_negative_filter: dict = cfg["ADDITIONAL_NEGATIVE_FILTER"]
         
         # Load crosswalk between mesh terms and conditions / interventions
         with open(cfg["MESH_CROSSWALK_INVERTED_PATH"], "r") as f:
@@ -629,6 +630,11 @@ class EligibilityCriteriaFilter(IterDataPipe):
         ct_status = sample[self.col_id["label"]].lower()
         metadata = {"path": ct_path, "status": ct_status}
         
+        # Special negative filtering (used in "generate_data.py")
+        for k, v in self.additional_negative_filter.items():
+            if sample[self.col_id[k]] == v:
+                return metadata, False
+                
         # Load relevant data
         ct_phases = ast.literal_eval(sample[self.col_id["phases"]])
         ct_cond_ids = ast.literal_eval(sample[self.col_id["condition_ids"]])
@@ -758,6 +764,7 @@ def get_embeddings(
     embed_model_id: str,
     preprocessed_dir: str,
     processed_dir: str,
+    write_results: bool=True,
 ) -> tuple[np.ndarray, list[str], dict]:
     """ Generate and save embeddings or load them from a previous run
     """
@@ -774,14 +781,15 @@ def get_embeddings(
             input_dir=preprocessed_dir,
             embed_model_id=embed_model_id,
         )
-        save_embeddings(
-            output_dir=processed_dir,
-            embed_model_id=embed_model_id,
-            embeddings=embeddings,
-            raw_txts=raw_txts,
-            metadatas=metadatas,
-        )
-        
+        if write_results:
+            save_embeddings(
+                output_dir=processed_dir,
+                embed_model_id=embed_model_id,
+                embeddings=embeddings,
+                raw_txts=raw_txts,
+                metadatas=metadatas,
+            )
+            
     return embeddings.numpy(), raw_txts, metadatas
 
 

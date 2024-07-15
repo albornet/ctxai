@@ -45,7 +45,8 @@ CHOSEN_COND_IDS: []  # Infections [C01] // Neoplasms [C04] // Cardiovascular Dis
 CHOSEN_ITRV_IDS: []  # [D02]
 CHOSEN_COND_LVL: 2  # null to ignore
 CHOSEN_ITRV_LVL: 1  # null to ignore
-STATUS_MAP: null
+STATUS_MAP: null  # null to ignore
+ADDITIONAL_NEGATIVE_FILTER: {}  # {} to ignore // used to remove some eligibility criteria based on key-value mapping
 
 # Eligibility criteria embedding parameters
 MAX_ELIGIBILITY_CRITERIA_SAMPLES: 2_000_000  # ct-gov has maximum 1740170 criteria (maximum, if no filter is applied)

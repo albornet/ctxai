@@ -120,8 +120,6 @@ def align_config(cfg):
     cfg["FULL_DATA_PATH"] = os.path.join(base_dir, cfg["DATA_PATH"])
     cfg["PROCESSED_DIR"] = os.path.join(output_dir, "processed")
     cfg["RESULT_DIR"] = os.path.join(output_dir, "results")
-    os.makedirs(cfg["PROCESSED_DIR"], exist_ok=True)
-    os.makedirs(cfg["RESULT_DIR"], exist_ok=True)
     
     # Special case for ctgov environment, where pre-processed data is re-used
     if cfg["ENVIRONMENT"] == "ctgov":

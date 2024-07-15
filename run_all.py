@@ -10,7 +10,9 @@ logger = config.CTxAILogger("INFO")
 
 
 def run_wsgi_server():
-    """ Function to start the WSGI server """
+    """ Function to start the WSGI server
+    """
+    logger.info("Starting WSGI server")
     command = ["python", "wsgi.py"]
     return subprocess.Popen(command)
 
