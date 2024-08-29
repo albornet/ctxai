@@ -25,11 +25,11 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 from optuna.samplers import TPESampler, RandomSampler
 from dask_cuda import LocalCUDACluster
 from dask.distributed import Client
-from hdbscan import all_points_membership_vectors
 from cuml import HDBSCAN
 from cuml.metrics.cluster import silhouette_score
 
 # Error handling for GPU
+import concurrent.futures
 import pynvml
 import rmm
 import logging
@@ -67,7 +67,6 @@ class ClusterGeneration:
         """
         cfg = config.get_config()  # load current configuration
         self.cluster_info = None
-        self.do_subclusterize = cfg["DO_SUBCLUSTERIZE"]
         self.n_cluster_max = cfg["N_CLUSTER_MAX"]
         self.optuna_param_ranges = cfg["OPTUNA_PARAM_RANGES"]
         self.n_optuna_trials = cfg["N_OPTUNA_TRIALS"]
@@ -116,9 +115,7 @@ class ClusterGeneration:
         """ Cluster samples and return cluster labels for each sample
         """
         params = self.best_hyper_params
-        self.cluster_info = self.clusterize(data=X, mode="primary", params=params)
-        if self.cluster_info is not None and self.do_subclusterize:
-            self.cluster_info = self.subclusterize(self.cluster_info, params=params)
+        self.cluster_info = self.clusterize(data=X, params=params)
         # return self.cluster_info["clusterer"].labels_
         return self.cluster_info["cluster_ids"]
 
@@ -128,9 +125,7 @@ class ClusterGeneration:
         # Perform clustering with a new set of suggested parameters
         params = self.suggest_parameters(trial)
         try:
-            cluster_info = self.clusterize(data=data, mode="primary", params=params)
-            if cluster_info["n_clusters"] > 1 and self.do_subclusterize:
-                cluster_info = self.subclusterize(cluster_info, params=params)
+            cluster_info = self.clusterize(data=data, params=params)
         except Exception:
             return float("-inf")
         
@@ -188,14 +183,14 @@ class ClusterGeneration:
             "allow_single_cluster": True,
             "max_cluster_size": adapt_param_fn(max_cluster_size, 100),
             "min_cluster_size": adapt_param_fn(min_cluster_size, 10),
-            "min_samples": adapt_param_fn(min_samples, 10, 128),  # 1023
+            "min_samples": adapt_param_fn(min_samples, 10, 128),  # 128 # 1023
         }
 
     def clusterize(
         self,
         data: np.ndarray,
-        mode: str,
         params: dict,
+        mode: str="primary",
     ) -> dict:
         """ Cluster data points with hdbscan algorithm and return cluster information
         """
@@ -204,24 +199,12 @@ class ClusterGeneration:
         
         # Find cluster affordances based on cluster hierarchy
         set_seeds(self.random_state)  # try to ensure reproducibility
-        clusterer = HDBSCAN(**cluster_params)  # prediction_data=True)
+        clusterer = HDBSCAN(**cluster_params)
         clusterer.fit(data)
         
         # Identify main cluster ids
-        if mode == "primary":
-            cluster_ids = clusterer.labels_
-            # cfg = config.get_config()
-            # if cfg["DO_SOFT_CLUSTERING"]:
-            #     unclustered_locs = np.where(cluster_ids == -1)[0]
-            #     soft_cluster_memberships = all_points_membership_vectors(clusterer)
-            #     max_values = soft_cluster_memberships.max(axis=1)
-            #     max_indices = soft_cluster_memberships.argmax(axis=1)
-            #     valid_locs = unclustered_locs[max_values[unclustered_locs] > 0.5]
-            #     cluster_ids[valid_locs] = max_indices[valid_locs]
-        
-        # Identify sub-cluster ids
-        else:
-            cluster_ids = clusterer.labels_
+        cluster_ids = clusterer.labels_
+        if mode == "secondary":
             cluster_ids[np.where(cluster_ids == -1)] = 0
         
         # Build lists of sample ids for each cluster
@@ -230,14 +213,20 @@ class ClusterGeneration:
             k: np.where(cluster_ids == k)[0].tolist() for k in range(-1, n_clusters)
         }
         
-        # Return cluster info
-        return {
+        # Build cluster info
+        cluster_info = {
             "clusterer": clusterer,
             "cluster_data": data,
             "n_clusters": n_clusters,
             "cluster_ids": cluster_ids,
             "member_ids": member_ids,
         }
+        
+        # Optionally sub-clusterize eligibility criteria embeddings
+        if cluster_info["n_clusters"] > 1 and params["subclusterize"]:
+            cluster_info = self.subclusterize(cluster_info, params=params)
+        
+        return cluster_info
      
     def subclusterize(self, cluster_info: dict, params: dict) -> dict:
         """ Update cluster results by trying to subcluster any computed cluster
@@ -362,6 +351,8 @@ class ClusterOutput:
         if write_results:
             self.output_dir = os.path.join(output_base_dir, embed_model_id)
             os.makedirs(self.output_dir, exist_ok=True)
+        else:
+            self.output_dir = None
         
         # Raw data and labels for each eligibility criterion
         self.raw_txts = raw_txts
@@ -397,6 +388,10 @@ class ClusterOutput:
             logger.info("Writing formatted cluster json file")
             self.write_to_json()  # this sets self.json_path
             logger.info("Cluster results have been generated!")
+        else:
+            self.visualization_paths = None
+            self.raw_ec_list_path = None
+            self.json_path = None
     
     def get_cluster_info(self, topic_model: BERTopic) -> dict:
         """ Re-align cluster ids from ClusterGeneration object to BERTopic topics

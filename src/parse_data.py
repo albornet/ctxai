@@ -19,7 +19,7 @@ from torchdata.dataloader2 import (
 )
 try:
     from cluster_utils import set_seeds
-    from preprocess_utils import (
+    from src.parse_utils import (
         ClinicalTrialFilter,
         CriteriaParser,
         CriteriaCSVWriter,
@@ -27,7 +27,7 @@ try:
     )
 except:
     from .cluster_utils import set_seeds
-    from .preprocess_utils import (
+    from .parse_utils import (
         ClinicalTrialFilter,
         CriteriaParser,
         CriteriaCSVWriter,

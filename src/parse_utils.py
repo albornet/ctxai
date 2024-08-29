@@ -101,16 +101,16 @@ class ClinicalTrialFilter(IterDataPipe):
                 criteria_str = protocol["eligibilitymodule"]["eligibilitycriteria"]
                 yield metadata, criteria_str
     
-    def lower_keys(self, dictionary: dict) -> dict:
-        if isinstance(dictionary, dict):
+    def lower_keys(self, dict_or_list_or_str: dict[str,dict|str]|list[str]|str):
+        if isinstance(dict_or_list_or_str, dict):
             return {
                 k.lower(): self.lower_keys(v)
-                for k, v in dictionary.items()
+                for k, v in dict_or_list_or_str.items()
             }
-        elif isinstance(dictionary, list):
-            return [self.lower_keys(item) for item in dictionary]
+        elif isinstance(dict_or_list_or_str, list):
+            return [self.lower_keys(item) for item in dict_or_list_or_str]
         else:
-            return dictionary
+            return dict_or_list_or_str
     
     def check_protocol(
         self,
@@ -394,7 +394,7 @@ class CriteriaParser(IterDataPipe):
             # Split by semicolon and put back semicolons that were protected
             splits = hidden_criterion.split(";")
             splits = [split.replace(placeholder, ";") for split in splits]        
-            post_parsed.extend([dict(criterion, text=s.strip()) for s in splits])
+            post_parsed.extend([dict(criterion, text=s.strip("\n; ")) for s in splits])
         
         # Return post-processed criteria
         return post_parsed
@@ -710,6 +710,7 @@ class EligibilityCriteriaFilter(IterDataPipe):
         # Filter condition or intervention ids
         if len(chosen_ids) > 0:
             ct_ids = [c for c in ct_ids if any([c.startswith(i) for i in chosen_ids])]
+            # ct_ids = [c for c in ct_ids if all([c.startswith(i) for i in chosen_ids])]
         
         # Select only the ones that have enough depth
         n_chars = level * 4 - 1  # format: at least "abc.def.ghi.jkl"

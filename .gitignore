@@ -163,6 +163,8 @@ cython_debug/
 **/data*
 **/results/*
 *api-key*
+experiments/*.png
+experiments/experiment_*_results*/
 utils/mesh_data_2023.xml
 tmp.py
 tmp.png

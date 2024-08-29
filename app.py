@@ -1,4 +1,10 @@
-from src import config, parse_data_fn, cluster_data_fn, run_all_config_models
+from src import (
+    config,
+    parse_data_fn,
+    cluster_data_fn,
+    run_experiment_1,
+    run_experiment_2,
+)
 from flask import Flask, jsonify, request
 config.load_default_config()
 logger = config.CTxAILogger("INFO")
@@ -16,9 +22,8 @@ def predict():
     # Initialization and validation of required fields in JSON payload
     logger.info("Starting eligibility criteria clustering pipeline")
     request_data = request.get_json(force=True)
-    if "SCRIPT_MODE" in request_data:
-        if request_data["SCRIPT_MODE"] == True:
-            logger.info("Running all models because API is called")
+    if "EXPERIMENT_MODE" in request_data:
+        logger.info("Experiment %1i being run" % request_data["EXPERIMENT_MODE"])
     else:
         required_keys = [
             "ENVIRONMENT",
@@ -38,17 +43,22 @@ def predict():
     logger.info("Parsing criterion texts into individual criteria")
     parse_data_fn()
     
-    # Cluster pre-processed data
-    logger.info("Clustering procedure started")
-    if "SCRIPT_MODE" in request_data:
-        run_all_config_models()
-        results = {"status": "success", "message": "Task completed successfully"}
-        return jsonify(results), 200
+    # Perform one of the experiments
+    if "EXPERIMENT_MODE" in request_data:
+        exp_id = request_data["EXPERIMENT_MODE"]
+        if exp_id == 1:
+            run_experiment_1()
+        elif exp_id == 2:
+            run_experiment_2()
+        return jsonify({"status": "success"}), 200
+    
+    # Or simply cluster requested data (ctgov or ctxai)
     else:
+        logger.info("Clustering procedure started")
         cluster_output = cluster_data_fn(request_data["EMBEDDING_MODEL_ID"])
     
     # Return jsonified file paths corresponding to the written data and plot
-    logger.info("Clustering procedure finished")
+    logger.info("Success!")
     return jsonify({
         "cluster_json_path": cluster_output.json_path,
         "cluster_visualization_paths": cluster_output.visualization_paths,

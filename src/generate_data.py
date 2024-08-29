@@ -3,34 +3,55 @@ import csv
 import json
 import time
 import random
+import argparse
 import config
 logger = config.CTxAILogger("INFO")
+import numpy as np
+import pandas as pd
 import torchdata.datapipes.iter as dpi
 import openai
 from openai import OpenAI
-from rouge_score import rouge_scorer
 from parse_data import CustomJsonParser
-from preprocess_utils import ClinicalTrialFilter
+from src.parse_utils import ClinicalTrialFilter
 from cluster_utils import ClusterOutput
 from cluster_data import cluster_data_fn
+from generate_utils import compute_scores
 from config import update_config
 
 
-GENERATOR_EMBEDDING_MODEL_ID = "pubmed-bert-sentence"
-GENERATOR_COND_FILTER_LVL = 2
-GENERATOR_ITRV_FILTER_LVL = 1
-GENERATOR_NUM_EVALUATED_SAMPLES = 250
-GENERATOR_RESULT_PATH = "./ec_generation_evaluation_results.csv"  # for now
-GENERATOR_LLM_SYSTEM_PROMPT = "You are an assistant helping to generate eligibility criteria sections for clinical trials."
-GENERATOR_LLM_USER_PROMPT = """
-I have a clinical trial that includes the following information:
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Generate data for clinical trials.")
+    parser.add_argument("--embed_model_id", type=str, default="pubmed-bert-sentence", help="EC embedding model ID")
+    parser.add_argument("--cond_filter_lvl", type=int, default=2, help="Condition filter level")
+    parser.add_argument("--itrv_filter_lvl", type=int, default=1, help="Intervention filter level")
+    parser.add_argument("--result_dir", type=str, default="ec_generation_evaluation_results", help="Directory for the result csv file")
+    parser.add_argument("--num_samples", type=int, default=10, help="Number of EC samples evaluated")
+    return parser.parse_args()
+
+
+ARGS = parse_arguments()
+EMBED_MODEL_ID = ARGS.embed_model_id
+COND_FILTER_LVL = ARGS.cond_filter_lvl
+ITRV_FILTER_LVL = ARGS.itrv_filter_lvl
+RESULT_DIR = ARGS.result_dir
+NUM_EVALUATED_SAMPLES = ARGS.num_samples
+RESULT_PATH = os.path.join(
+    RESULT_DIR,
+    "model-%s_cond-%1i_itrv-%1i.csv" % (EMBED_MODEL_ID, COND_FILTER_LVL, ITRV_FILTER_LVL)
+)
+MAX_GENERATED_ECS = 15
+LLM_SYSTEM_PROMPT = "You are an assistant helping to generate eligibility criteria sections for clinical trials."
+LLM_USER_PROMPT = """I have a clinical trial that includes the following information:
 [CT_DATA_TEXT]
 Based on the information above, generate the eligibility criteria section for this clinical trial.
-Make sure it is in the following format:
+Make sure the generated section includes %s eligibility criteria and has the following format:
 Inclusion criteria:
 <all inclusion criteria>
-Exclustion criteria:
+Exclusion criteria:
 <all exclusion criteria>
+""" % MAX_GENERATED_ECS
+TOPIC_DATA_PROMPT = """For context, here are topics identified in clinical trials sharing similar phase(s), condition(s) and intervention(s):
+[TOPIC_DATA]
 """
 
 
@@ -45,95 +66,100 @@ def main():
     # Loop through evaluation dataset to score both methods
     for ct_sample, ec_sample in zip(ct_data, ec_data):
         
+        # LLM method for ec-section generation
+        ct_path = ct_sample["ct_path"]
+        llm_ec_section = generate_llm_ec_section(ct_path)
+        
         # Clustering method for ec-section generation
         update_config_filters(ct_sample)  # /!\ this updates "cfg" /!\
         try:
-            cluster_output = cluster_data_fn(GENERATOR_EMBEDDING_MODEL_ID, write_results=False)
-            cluster_ec_section = generate_cluster_ec_section(cluster_output)
+            cluster_output = cluster_data_fn(EMBED_MODEL_ID, write_results=False)
             cluster_quality = cluster_output.cluster_metrics["label_free"]["Silhouette score"]
+            cluster_ec_section = generate_cluster_ec_section(cluster_output)
         except Exception as e:
             logger.info("Clustering method failed (%s)" % str(e))
             cluster_ec_section = ""  # default cluster ec-section
             cluster_quality = -1.0  # minimum value
         
-        # LLM method for ec-section generation
-        ct_path = ct_sample["ct_path"]
-        llm_ec_section = generate_llm_ec_section(ct_path)
-        
         # Compute and add scores to a csv file
-        write_scores_to_csv_file(
+        add_row_to_csv_file(
             ct_path=ct_path,
             reference=ec_sample,
-            cluster_prediction=cluster_ec_section,
             llm_prediction=llm_ec_section,
+            cluster_prediction=cluster_ec_section,
             cluster_quality=cluster_quality,
         )
+    
+    # Add random performance columns after all result rows were written
+    add_random_performance(RESULT_PATH)
 
 
-def write_scores_to_csv_file(
+def add_row_to_csv_file(
     ct_path: str,
     reference: str,
-    cluster_prediction: str,
     llm_prediction: str,
+    cluster_prediction: str,
     cluster_quality: float,
 ) -> None:
     """ Add results about one evaluated sample for eligibility criterion section
         generation, comparing the clustering method to the llm method
-        
-    Args:
-        ct_path (str): the path of the clinical trial document
-        reference (str): the reference text to compare against
-        cluster_prediction (str): the cluster-generated prediction
-        llm_prediction (str): the LLM-generated prediction
-        cluster_quality (float): how good clusters are (silhouette score)
     """
-    # Compute scores and average scores
-    scorer = rouge_scorer.RougeScorer(["rouge1", "rouge2", "rougeL"], use_stemmer=True)
-    cluster_scores = scorer.score(target=reference, prediction=cluster_prediction)
-    llm_scores = scorer.score(target=reference, prediction=llm_prediction)
-    cluster_avg_r = (cluster_scores["rouge1"].recall + cluster_scores["rouge2"].recall + cluster_scores["rougeL"].recall) / 3
-    cluster_avg_p = (cluster_scores["rouge1"].precision + cluster_scores["rouge2"].precision + cluster_scores["rougeL"].precision) / 3
-    cluster_avg_f = (cluster_scores["rouge1"].fmeasure + cluster_scores["rouge2"].fmeasure + cluster_scores["rougeL"].fmeasure) / 3
-    llm_avg_r = (llm_scores["rouge1"].recall + llm_scores["rouge2"].recall + llm_scores["rougeL"].recall) / 3
-    llm_avg_p = (llm_scores["rouge1"].precision + llm_scores["rouge2"].precision + llm_scores["rougeL"].precision) / 3
-    llm_avg_f = (llm_scores["rouge1"].fmeasure + llm_scores["rouge2"].fmeasure + llm_scores["rougeL"].fmeasure) / 3
-    
-    # Initialize result csv file if first line
-    column_names = [
-        "CT Path", "Best Method", "Cluster Quality",
-        "Cluster ROUGE-1-Recall Score", "Cluster ROUGE-1-Precision Score", "Cluster ROUGE-1-F Score",
-        "Cluster ROUGE-2-Recall Score", "Cluster ROUGE-2-Precision Score", "Cluster ROUGE-2-F Score",
-        "Cluster ROUGE-L-Recall Score", "Cluster ROUGE-L-Precision Score", "Cluster ROUGE-L-F Score",
-        "Cluster ROUGE-Average-R Score", "Cluster ROUGE-Average-P Score", "Cluster ROUGE-Average-F Score",
-        "LLM ROUGE-1-Recall Score", "LLM ROUGE-1-Precision Score", "LLM ROUGE-1-F Score",
-        "LLM ROUGE-2-Recall Score", "LLM ROUGE-2-Precision Score", "LLM ROUGE-2-F Score",
-        "LLM ROUGE-L-Recall Score", "LLM ROUGE-L-Precision Score", "LLM ROUGE-L-F Score",
-        "LLM ROUGE-Average-R Score", "LLM ROUGE-Average-P Score", "LLM ROUGE-Average-F Score",
-        "Cluster EC Section", "LLM EC Section",
-    ]
-    
-    # Prepare the row to append
-    best_method = "Cluster" if cluster_avg_f > llm_avg_f else "LLM"
-    row = [
-        ct_path, best_method, cluster_quality,
-        cluster_scores["rouge1"].recall, cluster_scores["rouge1"].precision, cluster_scores["rouge1"].fmeasure,
-        cluster_scores["rouge2"].recall, cluster_scores["rouge2"].precision, cluster_scores["rouge2"].fmeasure,
-        cluster_scores["rougeL"].recall, cluster_scores["rougeL"].precision, cluster_scores["rougeL"].fmeasure,
-        cluster_avg_r, cluster_avg_p, cluster_avg_f,
-        llm_scores["rouge1"].recall, llm_scores["rouge1"].precision, llm_scores["rouge1"].fmeasure,
-        llm_scores["rouge2"].recall, llm_scores["rouge2"].precision, llm_scores["rouge2"].fmeasure,
-        llm_scores["rougeL"].recall, llm_scores["rougeL"].precision, llm_scores["rougeL"].fmeasure,
-        llm_avg_r, llm_avg_p, llm_avg_f,
-        cluster_prediction, llm_prediction,
-    ]
+    # Compute performance
+    result_dict = {
+        "CT Path": ct_path,
+        "Cluster Quality": cluster_quality,
+        "Cluster EC Section": cluster_prediction,
+        "LLM EC Section": llm_prediction,
+        "Reference": reference,
+    }
+    score_dict = compute_scores(
+        reference,
+        cluster_prediction,
+        llm_prediction,
+    )
+    result_dict.update(score_dict)
     
     # Write to CSV file
-    file_exists = os.path.isfile(GENERATOR_RESULT_PATH)
-    with open(GENERATOR_RESULT_PATH, mode="a", newline="", encoding="utf-8") as file:
+    os.makedirs(RESULT_DIR, exist_ok=True)
+    file_exists = os.path.isfile(RESULT_PATH)
+    with open(RESULT_PATH, mode="a", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
-        if not file_exists:
-            writer.writerow(column_names)
-        writer.writerow(row)
+        if not file_exists:  # headers
+            writer.writerow(result_dict.keys())
+        writer.writerow(result_dict.values())
+
+
+def add_random_performance(path_to_csv_result_file: str) -> None:
+    """ Add random scores (scores using suffled references) to result csv file
+
+    Args:
+        path_to_csv_result_file (str): path to the fully generated result file
+    """
+    # Read result file as a pandas dataframe and extracts shuffled references
+    df = pd.read_csv(path_to_csv_result_file)
+    df["Cluster EC Section"] = df["Cluster EC Section"].fillna("")  # NaN values
+    references = df["Reference"].tolist()
+    shuffled_references = references[:]
+    random.shuffle(shuffled_references)
+    
+    # Recompute scores with shuffled references
+    shuffled_results = []
+    for index, row in df.iterrows():
+        shuffled_reference = shuffled_references[index]
+        shuffled_result_dict = compute_scores(
+            reference=shuffled_reference,
+            cluster_prediction=row["Cluster EC Section"],
+            llm_prediction=row["LLM EC Section"],
+        )
+        shuffled_results.append(shuffled_result_dict)
+    
+    # Write shuffled scores in new columns
+    for key in shuffled_results[0].keys():
+        if "Score" in key:
+            df[f"Shuffled {key}"] = [result[key] for result in shuffled_results]
+    
+    # Save the updated dataframe back to CSV
+    df.to_csv(path_to_csv_result_file, index=False)
 
 
 def generate_llm_ec_section(ct_path: str) -> str:
@@ -152,9 +178,10 @@ def generate_llm_ec_section(ct_path: str) -> str:
     ct_raw_dict["protocolSection"].pop("eligibilityModule")
     ct_raw_dict.pop("resultsSection", None)
     ct_raw_dict.pop("hasResults", None)
-    user_prompt = GENERATOR_LLM_USER_PROMPT.replace("[CT_DATA_TEXT]", str(ct_raw_dict))
+    user_prompt = LLM_USER_PROMPT.replace("[CT_DATA_TEXT]", str(ct_raw_dict))
     
     # Prompt gpt-3.5-turbo
+    logger.info("Generating ec section using LLM method")
     max_attempts = 5
     for attempt in range(max_attempts):
         try:
@@ -162,7 +189,7 @@ def generate_llm_ec_section(ct_path: str) -> str:
             response = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[
-                    {"role": "system", "content": GENERATOR_LLM_SYSTEM_PROMPT},
+                    {"role": "system", "content": LLM_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt}
                 ],
             )
@@ -175,6 +202,7 @@ def generate_llm_ec_section(ct_path: str) -> str:
         # Expected error handling
         except openai.OpenAIError as e:
             logger.error("Openai error occured (%s), retrying" % str(e))
+            user_prompt = user_prompt[int(len(user_prompt) * 0.9)]
         
         # Exponential back-off
         time.sleep(2 ** attempt)
@@ -210,23 +238,12 @@ def generate_cluster_ec_section(cluster_output: ClusterOutput) -> str:
     Returns:
         str: generated eligibility criteria section
     """
-    # Extract clusters and make sure larger clusters are processed first
-    clusters = cluster_output.cluster_instances
+    logger.info("Generating ec section using cluster method")
+    clusters = [c for c in cluster_output.cluster_instances if c.cluster_id != -1]
     clusters.sort(key=lambda cluster: cluster.prevalence, reverse=True)
-    
-    # Loop through each cluster to select ECs based on medoid proximity and cluster prevalence
-    selected_ecs = []
-    for cluster in clusters:
-        if cluster.cluster_id != -1:
-            
-            # Randomly select one EC from the closest ones
-            closest_ec = cluster.ec_list[0]  # ec closest to cluster medoid
-            # if len(selected_ecs) < GENERATOR_MAX_GENERATED_ECS:
-            if random.random() < cluster.prevalence:
-                selected_ec = closest_ec.raw_text.strip(";").strip()
-                selected_ecs.append(selected_ec)
-        
-    return format_ec_section(selected_ecs)
+    selected_ec_texts = [c.ec_list[0].raw_text for c in clusters]
+    ec_section = format_ec_section(selected_ec_texts[:MAX_GENERATED_ECS])
+    return ec_section
 
 
 def format_ec_section(ec_list: list[str]) -> str:
@@ -260,13 +277,13 @@ def format_ec_section(ec_list: list[str]) -> str:
 def update_config_filters(ct_data: dict) -> None:
     """ Update running configuration with phase, condition and intervention
         filters for later clustering 
-
+        
     Args:
         ct_data (dict): clinical trial data
     """
     # Identify phase(s), condition(s), and intervention(s) of the clinical trial
-    cond_ids = extract_ids_at_lvl(ct_data["condition_ids"], GENERATOR_COND_FILTER_LVL)
-    itrv_ids = extract_ids_at_lvl(ct_data["intervention_ids"], GENERATOR_ITRV_FILTER_LVL)
+    cond_ids = extract_ids_at_lvl(ct_data["condition_ids"], COND_FILTER_LVL)
+    itrv_ids = extract_ids_at_lvl(ct_data["intervention_ids"], ITRV_FILTER_LVL)
     to_update = {
         "CHOSEN_PHASES": ct_data["phases"],
         "CHOSEN_COND_IDS": cond_ids,
@@ -276,8 +293,9 @@ def update_config_filters(ct_data: dict) -> None:
     
     # Make sure that evaluated clinical trial is not considered for clustering 
     to_update.update({
+        "DO_EVALUATE_CLUSTERING": True,
         "ADDITIONAL_NEGATIVE_FILTER": {"ct path": ct_data["ct_path"]},
-        "MAX_ELIGIBILITY_CRITERIA_SAMPLES": 75_000,
+        "MAX_ELIGIBILITY_CRITERIA_SAMPLES": 100_000,
     })
     
     # Update globally shared configuration with current information
@@ -299,7 +317,7 @@ def extract_ids_at_lvl(ids: str, lvl: int) -> list[str]:
     return list(set(extracted_ids))
 
 
-def get_evaluated_ct_dataset(data_path: str) -> list[dict]:
+def get_evaluated_ct_dataset(data_path: str) -> list[list[dict], list[str]]:
     """ Build a dataset of evaluated clinical trials from raw json files
     
     Args:
@@ -318,9 +336,22 @@ def get_evaluated_ct_dataset(data_path: str) -> list[dict]:
     parsed_cts = CustomJsonParser(json_streams)
     filtered_cts = ClinicalTrialFilter(parsed_cts)
     
+    # Check for existing data from previous runs
+    try:
+        results_from_last_run = pd.read_csv(RESULT_PATH)
+        cts_evaluated_last_runs = results_from_last_run["CT Path"].tolist()
+    except FileNotFoundError:
+        cts_evaluated_last_runs = []
+    
+    # Load just enough CT data to complete the previous runs
     input_data, target_data = [], []
     for ct in filtered_cts:
-        if len(input_data) >= GENERATOR_NUM_EVALUATED_SAMPLES: break
+        if len(input_data) >= NUM_EVALUATED_SAMPLES:
+            break
+        if len(cts_evaluated_last_runs) + len(input_data) >= NUM_EVALUATED_SAMPLES:
+            break
+        if ct[0]["ct_path"] in cts_evaluated_last_runs:
+            continue
         input_data.append(ct[0])  # clinical trial metadata
         target_data.append(ct[1])  # eligibility criteria section
     

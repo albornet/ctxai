@@ -22,12 +22,13 @@ RUN apt-get update -y \
         openai==1.9.0 \
         optuna==3.5.0 \
         nltk==3.8.1 \
+        rouge_score==0.1.2 \
         kaleido==0.2.1 \
         Flask==3.0.1 \
         gunicorn==21.2.0
 
 # Copy and execute setup script in a single layer
-COPY setup_resources.py /app/setup_resources.py
+COPY src/setup_resources.py /app/setup_resources.py
 RUN python /app/setup_resources.py
 
 # Come back to original user for runtime

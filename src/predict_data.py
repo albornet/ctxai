@@ -15,73 +15,86 @@ logger = config.CTxAILogger("INFO")
 from sklearn.preprocessing import StandardScaler
 from sklearn.base import BaseEstimator
 from sklearn.pipeline import Pipeline
-from sklearn.datasets import make_regression, make_classification
+from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    ConfusionMatrixDisplay,
-    confusion_matrix,
-    r2_score,
-    classification_report
-)
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix, classification_report
 
 # Utils
 from imblearn.over_sampling import SMOTE
-from smogn import smoter
 from tqdm import tqdm
 from collections import defaultdict, Counter
-from predict_utils import (
-    select_normalizers,
-    get_ct_target,
-    find_best_model,
-    suggest_model,
-    compute_medoid,
-    post_process_ct_targets,
-)
+try:
+    from predict_utils import (
+        get_ct_target,
+        find_best_model,
+        suggest_model,
+        compute_medoid,
+    )
+except:
+    from .predict_utils import (
+        get_ct_target,
+        find_best_model,
+        suggest_model,
+        compute_medoid,
+    )
 
 
-def main():
+def run_experiment_2():
     """ Train an scikit-learn model on a CT-level classification task using
-        cluster affordance of its eligibility criteria as input 
+        cluster affordance of its eligibility criteria as input
     """
     # Get configuration and go through all embedding models
     cfg = config.get_config()
-    for embed_model_id in cfg["EMBEDDING_MODEL_ID_MAP"].keys():
-        
-        # Build dataset and create splits
-        result_dir = os.path.join(cfg["RESULT_DIR"], embed_model_id)
-        X, y = extract_prediction_dataset(result_dir)        
-        X_train, X_val_test, y_train, y_val_test = train_test_split(
-            X, y, test_size=0.3, random_state=cfg["RANDOM_STATE"],
-        )
-        X_val, X_test, y_val, y_test = train_test_split(
-            X_val_test, y_val_test, test_size=0.5, random_state=cfg["RANDOM_STATE"],
-        )
-        if cfg["BALANCE_PREDICTION_DATA"]:
-            X_train, y_train = balance_prediction_data(X_train, y_train)
-        
-        # Normalize input features and output targets
-        normalizer_X, normalizer_y = select_normalizers()
-        X_train = normalizer_X.fit_transform(X_train)
-        X_val = normalizer_X.fit_transform(X_val)
-        X_test = normalizer_X.transform(X_test)
-        
-        y_train = normalizer_y.fit_transform(y_train)
-        y_val = normalizer_y.transform(y_val)
-        y_test = normalizer_y.transform(y_test)
-        
-        # Find best hyper-parameters and fit final regression model
-        best_params = find_best_model(X_train, y_train, X_val, y_val)
-        best_model = suggest_model(model_params=best_params)
-        best_model.fit(X_train, y_train)
-        
-        # Test best model
-        test_model(result_dir, best_model, X_test, y_test, normalizer_y)
-        
-        # FOR NOW ONLY DOING ONE MODEL
-        break
-
-
-def extract_prediction_dataset(result_dir: str):
+    
+    for target_type in cfg["PREDICTOR_TARGET_TYPES"]:
+        for input_type in cfg["PREDICTOR_INPUT_TYPES"]:
+            
+            # Take model and retrieve cluster result dir
+            embed_model_id = cfg["PREDICTOR_EMBEDDING_MODEL_ID"]
+            result_dir = os.path.join(cfg["RESULT_DIR"], embed_model_id)
+            
+            # Build dataset and create splits
+            X, y = extract_prediction_dataset(result_dir, target_type, input_type)
+            X_train, X_val_test, y_train, y_val_test = train_test_split(
+                X, y,
+                test_size=0.3, random_state=cfg["RANDOM_STATE"],
+            )
+            X_val, X_test, y_val, y_test = train_test_split(
+                X_val_test, y_val_test,
+                test_size=0.5, random_state=cfg["RANDOM_STATE"],
+            )
+            if cfg["BALANCE_PREDICTION_DATA"]:
+                smote = SMOTE(random_state=cfg["RANDOM_STATE"])
+                X_train, y_train = smote.fit_resample(X_train, y_train)
+            
+            # Normalize input features and output targets
+            normalizer_X = StandardScaler()
+            normalizer_y = LabelEncoder()
+            X_train = normalizer_X.fit_transform(X_train)
+            X_val = normalizer_X.fit_transform(X_val)
+            X_test = normalizer_X.transform(X_test)
+            
+            y_train = normalizer_y.fit_transform(y_train)
+            y_val = normalizer_y.transform(y_val)
+            y_test = normalizer_y.transform(y_test)
+            
+            # Find best hyper-parameters and fit final regression model
+            logger.info("Finding best model for %s, %s" % (target_type, input_type))
+            best_params = find_best_model(X_train, y_train, X_val, y_val)
+            best_model = suggest_model(model_params=best_params)
+            best_model.fit(X_train, y_train)
+            
+            # Test best model and write results to a directory
+            file_name = "T%s-I%s-P%s" % (target_type, input_type, "-".join(cfg["CHOSEN_PHASES"]))
+            output_path = os.path.join(result_dir, "predict_results", file_name)
+            test_model(best_model, X_test, y_test, normalizer_y, output_path)
+            
+            
+def extract_prediction_dataset(
+    result_dir: str,
+    target_type: str,
+    input_type: str,
+):
     """ Extract a dataset paring EC cluster affordances for any clinical trial
         to the corresponding target defined by target_type
 
@@ -91,20 +104,9 @@ def extract_prediction_dataset(result_dir: str):
     Returns:
         (tuple[np.ndarray, np.ndarray]): input feature and target arrays
     """
-    # Dataset for debbugging
+    # Initialization
     cfg = config.get_config()
-    if cfg["PREDICTOR_TARGET_TYPE"] == "debug":
-        match cfg["PREDICTOR_TASK_TYPE"]:
-        
-            case "regression":
-                return make_regression(
-                    n_samples=1000, n_features=100, n_informative=10, n_targets=1,
-                )
-                
-            case "classification":
-                return make_classification(
-                    n_samples=1000, n_features=20, n_informative=4, n_classes=4,
-                )
+    take_ct_path_dict = {}
     
     # Collect raw embeddings and cluster output data
     raw_embedding_path = result_dir.replace("results/", "processed/embeddings_") + ".pt"
@@ -123,6 +125,7 @@ def extract_prediction_dataset(result_dir: str):
         iterable=cluster_output_data["cluster_instances"],
         total=len(cluster_output_data["cluster_instances"]),
         desc="Building input features from eligibility criteria",
+        bar_format="{l_bar}{n_fmt}/{total_fmt} clusters{bar}{r_bar}",
     ):
         cluster_id = cluster_instance["cluster_id"]
         ec_list = cluster_instance["ec_list"]
@@ -130,22 +133,34 @@ def extract_prediction_dataset(result_dir: str):
         raw_cluster_medoid = compute_medoid(raw_embeddings[ec_ids])
         red_cluster_medoid = cluster_instance["medoid"]
         for ec, ec_id in zip(ec_list, ec_ids):
+            # Check processed clinical trial algigns with chosen phase(s)
             ct_path = ec["ct_id"]
-            raw_embedding = raw_embeddings[ec_id]
-            red_embedding = ec["reduced_embedding"]
-            cluster_dict[ct_path].append(cluster_id)
-            red_embedding_dict[ct_path].append(red_embedding)
-            raw_embedding_dict[ct_path].append(raw_embedding)
-            raw_medoid_dict[ct_path].append(raw_cluster_medoid)
-            red_medoid_dict[ct_path].append(red_cluster_medoid)
+            if ct_path not in take_ct_path_dict:
+                with open(ct_path, "r", encoding="utf-8") as file:
+                    ct_raw_dict: dict[str, dict|bool] = json.load(file)
+                ct_phases = ct_raw_dict["protocolSection"]["designModule"]["phases"]
+                ct_phases = [p.lower() for p in ct_phases]
+                if all([p not in ct_phases for p in cfg["CHOSEN_PHASES"]])\
+                and cfg["CHOSEN_PHASES"] != []:
+                    take_ct_path_dict[ct_path] = False
+                else:
+                    take_ct_path_dict[ct_path] = True
+            
+            # Populate input feature data point
+            if take_ct_path_dict[ct_path]:
+                raw_embedding = raw_embeddings[ec_id]
+                red_embedding = ec["reduced_embedding"]
+                cluster_dict[ct_path].append(cluster_id)
+                red_embedding_dict[ct_path].append(red_embedding)
+                raw_embedding_dict[ct_path].append(raw_embedding)
+                raw_medoid_dict[ct_path].append(raw_cluster_medoid)
+                red_medoid_dict[ct_path].append(red_cluster_medoid)
             
     # Initialize final dataset
     n_samples_max = len(cluster_dict)
     n_clusters = len(cluster_output_data["cluster_instances"])
     raw_embedding_dim = len(raw_embedding)  # last one loaded
     red_embedding_dim = len(red_embedding)  # last one loaded
-    raw_complete_dim = raw_embedding_dim * n_clusters
-    red_complete_dim = red_embedding_dim * n_clusters
     output_targets = np.empty((n_samples_max,), dtype=object)
     cluster_features = np.zeros((n_samples_max, n_clusters))
     raw_embedding_features = np.zeros((n_samples_max, raw_embedding_dim))
@@ -170,6 +185,7 @@ def extract_prediction_dataset(result_dir: str):
         )),
         total=len(cluster_dict),
         desc="Extracting feature-target pairs",
+        bar_format="{l_bar}{n_fmt}/{total_fmt} CTs{bar}{r_bar}",
     ):
         # Load clinical trial data
         assert ct_path_1 == ct_path_2 == ct_path_3 == ct_path_4 == ct_path_5
@@ -177,7 +193,7 @@ def extract_prediction_dataset(result_dir: str):
             ct_data = json.load(f)
         
         # Extract target (or None if not found)
-        ct_target = get_ct_target(ct_data)
+        ct_target = get_ct_target(ct_data, target_type)
         output_targets[row_id] = ct_target
         
         # Build cluster input feature vector from EC cluster affordances
@@ -200,7 +216,6 @@ def extract_prediction_dataset(result_dir: str):
     # Build final dataset (removing samples with no label found)
     mask = np.vectorize(lambda x: x is not None)(output_targets)
     output_targets = output_targets[mask]
-    output_targets = post_process_ct_targets(output_targets)
     cluster_features = cluster_features[mask]
     raw_embedding_features = raw_embedding_features[mask]
     red_embedding_features = red_embedding_features[mask]
@@ -210,7 +225,7 @@ def extract_prediction_dataset(result_dir: str):
     red_complete_features = red_complete_features[mask]
     
     # Select input feature type
-    match cfg["PREDICTOR_INPUT_TYPE"]:
+    match input_type:
         case "cluster_ids":
             input_features = cluster_features
         case "raw_embeddings":
@@ -230,66 +245,42 @@ def extract_prediction_dataset(result_dir: str):
         case _:
             raise ValueError("Invalid predictor input type")
     
-    # Print task information
-    print("Using %s model to predict %s from %s input features of shape = %s" % (
-        cfg["PREDICTOR_MODEL_TYPE"],
-        cfg["PREDICTOR_TARGET_TYPE"],
-        cfg["PREDICTOR_INPUT_TYPE"],
-        input_features.shape,
-    ))
-    
-    # Adjust data type for regression
-    if cfg["PREDICTOR_TASK_TYPE"] == "regression":
-        output_targets = output_targets.astype(np.float32)
-    else:
-        num_classes = len(list(set(output_targets)))
-        print("Number of classes: %s" % num_classes)
-    
-    return input_features, output_targets
-
-
-def balance_prediction_data(
-    X: np.ndarray,
-    y: np.ndarray,
-) -> tuple[np.ndarray]:
-    """ Balance data given output targets, handling classification or regression
-
-    Args:
-        X (np.ndarray): input features of the training data
-        y (np.ndarray): output targets of the training data
-
-    Returns:
-        tuple[np.ndarray]: balanced inpute features and output targets
-    """
-    cfg = config.get_config()
-    match cfg["PREDICTOR_TASK_TYPE"]:
+    # Transform labels given predictor task type (regression vs classification)
+    task_type = "classification" if target_type in ["phase", "status"] else "classification_pareto"
+    match task_type:
         
-        case "regression":
-            X_y = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
-            X_y["target"] = y
-            X_y_resampled = smoter(data=X_y, y="target")
-            X_resampled = X_y_resampled.drop(columns=["target"]).values
-            y_resampled = X_y_resampled["target"].values
-            
+        # Create binary classification task using the Pareto principle
+        case "classification_pareto":
+            assert all(isinstance(x, (int, float)) for x in output_targets)
+            threshold = np.sort(output_targets)[int(len(output_targets) * 0.5)]  # 0.8?
+            output_targets = np.where(output_targets >= threshold, 1, 0).astype("object")
+        
+        # Normal classification task
         case "classification":
-            smote = SMOTE(random_state=cfg["RANDOM_STATE"])
-            X_resampled, y_resampled = smote.fit_resample(X, y)
-    
-    return X_resampled, y_resampled
+            assert not any(isinstance(x, float) for x in output_targets)
+            num_classes = len(list(set(output_targets)))
+            print("Number of classes: %s" % num_classes)
+        
+    # Adapt label data type
+    if output_targets.dtype == object:
+        output_targets = output_targets.astype(type(output_targets[0]))
+        
+    return input_features, output_targets
     
 
 def test_model(
-    result_dir: str,
     model: BaseEstimator,
     X_test: np.ndarray,
     y_test: np.ndarray,
     normalizer_y: Pipeline|StandardScaler,
+    output_path: str,
+    produce_img: bool=False,
 ):
-    """ Generate a csv file containing model prediction and true target values
-        for each sample of the testing dataset
+    """ Test model, write classification report to a csv file and confusion
+        matrix to an image file
 
     Args:
-        result_dir (str): directory in which results are saved
+        output_path (str): where results are saved
         model (BaseEstimator): model trained with the training dataset
         X_test (np.ndarray): input features of the testing dataset
         y_test (np.ndarray): output targets of the testing dataset
@@ -302,78 +293,30 @@ def test_model(
     y_test = normalizer_y.inverse_transform(y_test)
     y_pred = normalizer_y.inverse_transform(y_pred)
     
-    # Write actual and predicted values to a csv file
-    results_df = pd.DataFrame({"Actual": y_test, "Predicted": y_pred})
-    csv_path = os.path.join(result_dir, "predict_results.csv")
-    results_df.to_csv(csv_path, index=False)
+    # Write classification report to a csv file
+    os.makedirs(os.path.split(output_path)[0], exist_ok=True)
+    report = classification_report(y_test, y_pred, output_dict=True)
+    df_report = pd.DataFrame(report).transpose()
+    df_report.to_csv(output_path + ".csv")
     
-    # Wite results to a png file (scatter plot comparing predictions and targets)
-    cfg = config.get_config()
-    plot_path = os.path.join(result_dir, "predict_results.png")
-    match cfg["PREDICTOR_TASK_TYPE"]:
-        
-        case "regression":
-            plot_regression_results(plot_path, y_test, y_pred)
-        
-        case "classification":
-            class_names = normalizer_y.classes_
-            plot_classification_results(plot_path, class_names, y_test, y_pred)
+    # Write confusion matrix to an image file
+    if produce_img:
+        cm = confusion_matrix(y_test, y_pred)
+        class_names = normalizer_y.classes_
+        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+        _, ax = plt.subplots(figsize=(10, 10))
+        disp.plot(ax=ax, cmap="Blues", values_format="d")
+        plt.title("Confusion Matrix")
+        plt.xlabel("Predicted Label")
+        plt.ylabel("True Label")
+        plt.savefig(output_path + ".png")
+        plt.close()
     
-
-def plot_regression_results(
-    plot_path: str,
-    y_test: np.ndarray,
-    y_pred: np.ndarray,
-) -> plt.Figure:
-    """ Create a scatter plot of actual vs predicted values
-
-    Args:
-        plot_path (str): path to which the plot will be saved
-        y_test (np.ndarray): true labels
-        y_pred (np.ndarray): predicted labels
-    """
-    r_squared = r2_score(y_test, y_pred)
-    print(f"R^2 score: {r_squared}")
-    plt.figure(figsize=(8, 6))
-    plt.scatter(y_test, y_pred, alpha=0.5, color="blue")
-    plt.title("Actual vs Predicted Values")
-    plt.xlabel("Actual Values")
-    plt.ylabel("Predicted Values")
-    plt.xscale("log"); plt.yscale("log")
-    plt.grid(True)
-    plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], "red")
-    plt.text(
-        min(y_test), max(y_pred), f"R^2 = {r_squared:.2f}",
-        fontsize=12, bbox=dict(facecolor="white", alpha=0.5),
-    )
-    plt.savefig(plot_path)
-
-
-def plot_classification_results(
-    plot_path: str,
-    class_names: np.ndarray[str],
-    y_test: np.ndarray,
-    y_pred: np.ndarray,
-):
-    """ Plots a confusion matrix for a multi-class classification scenario
-
-    Args:
-        plot_path (str): path to which the plot will be saved
-        class_names: names of the predicted classes
-        y_test (np.ndarray): true labels
-        y_pred (np.ndarray): predicted labels
-    """
-    print(classification_report(y_test, y_pred))
-    cm = confusion_matrix(y_test, y_pred)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
-    _, ax = plt.subplots(figsize=(10, 10))
-    disp.plot(ax=ax, cmap='Blues', values_format='d')
-    plt.title('Confusion Matrix')
-    plt.xlabel('Predicted Label')
-    plt.ylabel('True Label')
-    plt.savefig(plot_path)
-
+    # Log main performance indicator
+    logged_perf = df_report["f1-score"]["macro avg"]
+    logger.info("Test-macro-avg-f1-score for this model: %.04f" % logged_perf)
+    
 
 if __name__ == "__main__":
-    main()
+    run_experiment_2()
     

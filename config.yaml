@@ -7,17 +7,16 @@ PROJECT_ID: example_project_id  # any string (overwritten if SELECT_USER_ID_AND_
 USER_FILTERING: null  # null, intervention, condition, intersection
 OPTUNA_SAMPLER: tpe  # tpe (presumably better), random (seed presumably more stable)
 RANDOM_STATE: 0123
-LOAD_PARSED_DATA: true
+LOAD_PARSED_DATA: false
 LOAD_EMBEDDINGS: false  # set to false if you change CHOSEN_COND/ITRV_LVL/IDS
 LOAD_BERTOPIC_RESULTS: false
 
 # Prediction  parameters
-PREDICTOR_TARGET_TYPE: status  # debug, phase, status, condition, intervention_type, intervention_name, primary_outcome, is_fda_regulated_drug, enrollment_count,  enrollment_type, enrollment_rate
-PREDICTOR_TASK_TYPE: classification  # classification, regression, must correspond to PREDICTOR_TARGET_TYPE (error not caught for now)
-PREDICTOR_MODEL_TYPE: sv  # ridge, lasso, elasticnet, sv, decisiontree, randomforest, gradientboosting, knn, naivebayes
-PREDICTOR_INPUT_TYPE: raw_completes  # random, cluster_ids, raw_embeddings, reduced_embeddings, raw_medoids, reduced_medoids, raw_completes, reduced_completes
-BALANCE_PREDICTION_DATA: false
-N_PREDICTION_OPTUNA_TRIALS: 25
+PREDICTOR_TARGET_TYPES: [phase, status, study_duration, enrollment_count, operational_rate]
+PREDICTOR_INPUT_TYPES: [random, cluster_ids, raw_embeddings]  # [random, reduced_embeddings, raw_medoids, reduced_medoids, raw_completes, reduced_completes]
+PREDICTOR_EMBEDDING_MODEL_ID: pubmed-bert-sentence  # only with the best one from cluster analysis
+BALANCE_PREDICTION_DATA: true
+N_PREDICTION_OPTUNA_TRIALS: 100
 
 # Eligibility criteria parsing parameters
 NUM_PARSE_WORKERS: 19  # 0 for no multi processing
@@ -41,7 +40,7 @@ MESH_CROSSWALK_INVERTED_PATH: utils/mesh_crosswalk_inverted.json
 CHOSEN_STATUSES: []  # [completed, suspended, withdrawn, terminated, unknown status] -> /!\ I ended up selecting only completed + terminated CTs
 CHOSEN_CRITERIA: []  # [in]
 CHOSEN_PHASES: []  # [phase2]
-CHOSEN_COND_IDS: []  # Infections [C01] // Neoplasms [C04] // Cardiovascular Diseases [C14] // Immune System Diseases [C20]
+CHOSEN_COND_IDS: ["C01"]  # Infections [C01] // Neoplasms [C04] // Cardiovascular Diseases [C14] // Immune System Diseases [C20]
 CHOSEN_ITRV_IDS: []  # [D02]
 CHOSEN_COND_LVL: 2  # null to ignore
 CHOSEN_ITRV_LVL: 1  # null to ignore
@@ -53,19 +52,19 @@ MAX_ELIGIBILITY_CRITERIA_SAMPLES: 2_000_000  # ct-gov has maximum 1740170 criter
 EMBEDDING_BATCH_SIZE: 64
 EMBEDDING_MODEL_ID_MAP:
   pubmed-bert-sentence: pritamdeka/S-PubMedBert-MS-MARCO
-  # transformer-sentence: sentence-transformers/all-mpnet-base-v2
-  bert-sentence: efederici/sentence-bert-base
+  bert-sentence: sentence-transformers/msmarco-bert-base-dot-v5
   pubmed-bert-token: microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext
-  # bioct-bert-token: domenicrosati/ClinicalTrialBioBert-NLI4CT
-  # roberta: roberta-large
   bert: bert-large-uncased
+  # roberta: roberta-large
+  # bioct-bert-token: domenicrosati/ClinicalTrialBioBert-NLI4CT
+  # transformer-sentence: sentence-transformers/all-mpnet-base-v2
 
 # Clustering hyper-optimization parameters
 N_OPTUNA_TRIALS: 100
-N_CLUSTER_MAX: 500  # used to avoid extreme hyper-parameter combinations
+N_CLUSTER_MAX: 1000  # used to avoid extreme hyper-parameter combinations
 OPTUNA_PARAM_RANGES:
   max_cluster_size_primary: [0.01, 0.050]
-  min_cluster_size_primary: [0.00, 0.001]
+  min_cluster_size_primary: [0.0001, 0.001]
   min_samples_primary: [0.0, 0.001]
   cluster_selection_method_primary: [eom, leaf]
   alpha_primary: [0.1, 3.0]
@@ -74,10 +73,10 @@ OPTUNA_PARAM_RANGES:
   min_samples_secondary: [0.00, 0.01]
   cluster_selection_method_secondary: [eom, leaf]
   alpha_secondary: [0.1, 3.0]
+  subclusterize: [true, false]
 
 # Cluster generation parameters
 DO_EVALUATE_CLUSTERING: true  # if true, will generate metrics for the clustering
-DO_SUBCLUSTERIZE: true  # if true, try to cluster further each computed cluster
 CLUSTER_DIM_RED_ALGO: tsne  # pca, umap, tsne, null (umap advised here)
 CLUSTER_RED_DIM: 2  # becomes full-dim if CLUSTER_DIM_RED_ALGO == null
 CLUSTER_RDM_METRIC: null  # null, correlation, euclidean  # NOT USED FOR NOW

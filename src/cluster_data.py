@@ -8,14 +8,15 @@ logger = config.CTxAILogger("INFO")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Utils
+import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 try:
     from cluster_utils import ClusterGeneration, ClusterOutput, get_dim_red_model, set_seeds
-    from preprocess_utils import get_embeddings
+    from src.parse_utils import get_embeddings
 except:
     from .cluster_utils import ClusterGeneration, ClusterOutput, get_dim_red_model, set_seeds
-    from .preprocess_utils import get_embeddings
+    from .parse_utils import get_embeddings
 
 # Clustering and representation
 from openai import OpenAI as OpenAIClient
@@ -25,7 +26,7 @@ from bertopic.representation import OpenAI
 from sklearn.feature_extraction.text import CountVectorizer
 
 
-def run_all_config_models():
+def run_experiment_1():
     """ If ran as a script, call cluster_data for several models and write
         a summary of results to the output directory
     """
@@ -171,9 +172,9 @@ def plot_model_comparison(metrics: dict, output_path: str, fig_title: str):
     # Function to keep only what will be plotted
     def norm_fn(d: dict[str, dict], dept_key: str) -> dict:
         to_plot = [
-            "Silhouette score", "DB index", "Dunn index",  # "MI score",
-            "AMI score", "Homogeneity", "Completeness", "V measure",
-        ]    
+            # "Silhouette score", "DB index", "Dunn index", "MI score",
+            "AMI score",  # "Homogeneity", "Completeness", "V measure",
+        ]  # only AMI score because of many possible true label classes
         d_free, d_dept = d["label_free"], d["label_%s" % dept_key]
         d_free = {k: v for k, v in d_free.items() if k in to_plot}
         d_dept = {k: d_dept[k] for k in d_dept.keys() if k in to_plot}
@@ -193,7 +194,7 @@ def plot_model_comparison(metrics: dict, output_path: str, fig_title: str):
     width = 0.8 / num_models  # Adjust width based on number of models
     
     # Plot metrics for each model
-    fig, ax = plt.subplots(figsize=(12, 5))
+    fig, ax = plt.subplots(figsize=(3 * len(to_plot), 5))
     for idx, (model_name, metric) in enumerate(to_plot.items()):
         
         # Plot metric values
@@ -205,7 +206,7 @@ def plot_model_comparison(metrics: dict, output_path: str, fig_title: str):
         for rect in rects:
             height = rect.get_height()
             ax.annotate(
-                text="{}".format(round(height, 2)),
+                text="{:.4f}".format(height),
                 xy=(rect.get_x() + rect.get_width() / 2, height),
                 xytext=(0, 3),  # 3 points vertical offset
                 textcoords="offset points",
@@ -222,11 +223,13 @@ def plot_model_comparison(metrics: dict, output_path: str, fig_title: str):
     ax.legend(fontsize="large", loc="upper right", ncol=1)
     ax.plot([-0.1, len(metrics) - 0.1], [0, 0], color="k")
     
-    # Save final figure
+    # Save final figure and csv file
     fig.tight_layout()
     plt.savefig(output_path, dpi=300)
+    df = pd.DataFrame.from_dict(to_plot, orient="index")
+    df.to_csv(output_path.replace(".png", ".csv"))
 
     
 if __name__ == "__main__":
-    run_all_config_models()
+    run_experiment_1()
     
