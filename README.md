@@ -1,17 +1,8 @@
 # CTxAI - Eligibility Criteria
 
-This project aims to provide feedback about eligibility criteria of a new study, based on the history of similar clinical trials.
+This is the repository for the manuscript "Analysis of Eligibility Criterion Clusters Based on Large Language Models for Clinical Trial Design".
 
 ![Pipeline](images/pipeline.png)
-
-## Description
-
-Using [BERTopic](https://maartengr.github.io/BERTopic/index.html "BERTopic github page") as a backbone, the pipeline performs the following steps:
-
-* First, eligibility criteria are parsed from the CT.gov database and split into a set of individual criteria.
-* Then, a language model pre-trained on a clinical corpus embeds all criteria coming from studies that are similar to a new clinical trial.
-* After dimensionality reduction, these embedded criteria are clustered using HDBScan, and the clusters are used to compute statistics about the selected similar studies.
-* Finally, cluster statistics are computed, and criteria clusters are represented by.
 
 ## Getting Started
 
@@ -49,9 +40,38 @@ If you prefer not to use Docker or if you're working in an environment where Doc
    ```
    conda activate ctxai  # or the enviornment name you choose to edit in environment/environment_droplet.yml
    ```
-4. Make sure you have your data ready in a .xslx file or in several .xslx files located in the same directory. The data should have at least the following fields: `["trialid", "recruitmentStatusNorm", "phaseNorm", "conditions_", "conditions", "interventions", "inclusionCriteriaNorm", "exclusionCriteriaNorm"]`
 
-### Executing Program
+### Using the repository
+
+#### Running the experiments
+
+Start by downloading the raw dataset by executing:
+
+```
+./download_raw_data.sh
+```
+
+Then, build the eligibility criterion dataset by executing:
+
+```
+python src/parse_data.py
+```
+
+Then, run all experiments:
+
+```
+python experiments/experiment_1.py
+python experiments/experiment_2.py
+./experiments/experiment_3.sh
+```
+
+Finally, plot the results:
+
+```
+python experiments/plot_experiment_1.py
+python experiments/plot_experiment_2.py
+python experiments/plot_experiment_3.py
+```
 
 #### As a webservice (using Docker)
 
@@ -63,8 +83,8 @@ To execute the pipeline using Docker, send a POST request with the desired confi
     "USER_ID": "1234",
     "PROJECT_ID": "5678",
     "EMBEDDING_MODEL_ID": "pubmed-bert-sentence",
-    "CLUSTER_DIM_RED_ALGO": "umap",
-    "CLUSTER_RED_DIM": 10,
+    "CLUSTER_DIM_RED_ALGO": "tsne",
+    "CLUSTER_RED_DIM": 2,
     "PLOT_DIM_RED_ALGO": "tsne",
     "PLOT_RED_DIM": 2,
     "CLUSTER_REPRESENTATION_MODEL": "gpt",
@@ -110,4 +130,3 @@ If you've set up your environment using Conda:
    python src/parse_data.py
    python src/cluster_data.py
    ```
-   This command performs the entire pipeline from data preprocessing to clustering and visualization based on the configuration.
